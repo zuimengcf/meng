@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="clipboard_manage_fullscreen">全屏剪切板</string>
+    <string name="clipboard_manage_fullscreen_hint">查看与编辑内容、管理分组、排序和房间同步</string>
+</resources>

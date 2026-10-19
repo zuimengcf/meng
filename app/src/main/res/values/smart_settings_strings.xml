@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="smart_input_summary">管理联想、拼音纠错与输入统计；关闭总开关不会清除已选择的策略。</string>
+    <string name="smart_pinyin_correct_enabled_hint">启用后按下方策略纠正拼音；关闭时保留策略选择，重新开启即可恢复。</string>
+    <string name="smart_suggestion_limit_advanced_summary">高级设置：每次最多显示 %1$d 条（默认15条）</string>
+    <string name="smart_correct_neighbor_hint">纠正相邻按键导致的拼音错位</string>
+    <string name="smart_correct_fuzzy_hint">兼容常见的声母、韵母混淆</string>
+    <string name="smart_correct_habit_hint">使用已学习的个人错拼与习惯码表</string>
+</resources>

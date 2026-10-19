@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ime_update_channel">输入法更新提示</string>
+    <string name="ime_update_title">梦输入法已更新</string>
+    <string name="ime_update_message">若系统切换了输入法，点此返回启动引导，重新启用或选择梦输入法。</string>
+</resources>

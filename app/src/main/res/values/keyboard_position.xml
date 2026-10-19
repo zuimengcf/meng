@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="keyboard_position_mode">键盘位置模式</string>
+    <string name="keyboard_mode_standard">标准</string>
+    <string name="keyboard_mode_left">单手（左）</string>
+    <string name="keyboard_mode_right">单手（右）</string>
+    <string name="keyboard_mode_floating">悬浮</string>
+    <string name="one_hand_width_percent">单手键盘宽度</string>
+    <string name="one_hand_edge_margin">单手键盘边缘间距</string>
+    <string name="one_hand_bottom_margin">单手键盘底部间距</string>
+    <string name="floating_width_percent">悬浮键盘宽度</string>
+    <string name="floating_x_percent">悬浮键盘水平位置</string>
+    <string name="floating_y_percent">悬浮键盘垂直位置</string>
+    <string name="keyboard_position_menu_hint">点按左上角菜单中的“键盘布局/单手悬浮”可切换和调整；长按菜单按钮也可快速打开</string>
+    <string name="keyboard_position_menu_hint_title">键盘位置快捷入口</string>
+</resources>

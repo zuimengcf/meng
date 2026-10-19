@@ -1,0 +1,125 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the fcitx5-hangul package.
+#
+# Translators:
+# Daniel Nylander <po@danielnylander.se>, 2026
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: fcitx5-hangul\n"
+"Report-Msgid-Bugs-To: fcitx-dev@googlegroups.com\n"
+"POT-Creation-Date: 2026-09-04 20:25+0000\n"
+"PO-Revision-Date: 2017-12-29 05:05+0000\n"
+"Last-Translator: Daniel Nylander <po@danielnylander.se>, 2026\n"
+"Language-Team: Swedish (https://app.transifex.com/fcitx/teams/12005/sv/)\n"
+"Language: sv\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: src/engine.h:45
+msgid "Dubeolsik"
+msgstr "Dubeolsik"
+
+#: src/engine.h:46
+msgid "Dubeolsik Yetgeul"
+msgstr "Dubeolsik Yetgeul"
+
+#: src/engine.h:46
+msgid "Sebeolsik 390"
+msgstr "Sebeolsik 390"
+
+#: src/engine.h:47
+msgid "Sebeolsik Final"
+msgstr "Sebeolsik Final"
+
+#: src/engine.h:47
+msgid "Sebeolsik Noshift"
+msgstr "Sebeolsik Noshift"
+
+#: src/engine.h:48
+msgid "Sebeolsik Yetgeul"
+msgstr "Sebeolsik Yetgeul"
+
+#: src/engine.h:49
+msgid "Sebeolsik Dubeol Layout"
+msgstr "Sebeolsik Dubeol-layout"
+
+#: src/engine.h:49
+msgid "Romaja"
+msgstr "Romaja"
+
+#: src/engine.h:50
+msgid "Ahnmatae"
+msgstr "Ahnmatae"
+
+#: src/engine.h:55
+msgid "Keyboard Layout"
+msgstr "Tangentbordslayout"
+
+#: src/engine.h:59
+msgid "Hanja Mode Toggle Key"
+msgstr "Växlingstangent för hanja-läge"
+
+#: src/engine.h:65
+msgid "Prev Page"
+msgstr "Föregående sida"
+
+#: src/engine.h:71
+msgid "Next Page"
+msgstr "Nästa sida"
+
+#: src/engine.h:77
+msgid "Prev Candidate"
+msgstr "Föregående kandidat"
+
+#: src/engine.h:83
+msgid "Next Candidate"
+msgstr "Nästa kandidat"
+
+#. This is default true, due to it has always been.
+#: src/engine.h:87
+msgid "Auto Reorder"
+msgstr "Ordna om automatiskt"
+
+#: src/engine.h:92
+msgid "Combine on Double Stroke"
+msgstr "Kombinera vid dubbelslag"
+
+#: src/engine.h:94
+msgid "Combine Non Choseong"
+msgstr "Kombinera icke-choseong"
+
+#: src/engine.h:96
+msgid "Word Commit"
+msgstr "Ordbekräftelse"
+
+#: src/engine.h:97
+msgid "Hanja Mode"
+msgstr "Hanja-läge"
+
+#: src/engine.h:135
+msgid "Use Hanja"
+msgstr "Använd hanja"
+
+#: src/engine.h:136
+msgid "Use Hangul"
+msgstr "Använd hangul"
+
+#: src/hangul.conf.in:2 src/hangul-addon.conf.in.in:2
+msgid "Hangul"
+msgstr "Hangul"
+
+#: src/hangul-addon.conf.in.in:3
+msgid "Hangul Wrapper For Fcitx"
+msgstr "Hangul-omslag för Fcitx"
+
+#: org.fcitx.Fcitx5.Addon.Hangul.metainfo.xml.in:7
+msgid "Hangul for Fcitx 5"
+msgstr "Hangul för Fcitx 5"
+
+#: org.fcitx.Fcitx5.Addon.Hangul.metainfo.xml.in:8
+msgid "Hangul engine for Fcitx 5"
+msgstr "Hangul-motor för Fcitx 5"

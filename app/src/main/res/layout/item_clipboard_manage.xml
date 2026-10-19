@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="12dp"
+    android:paddingTop="6dp"
+    android:paddingBottom="6dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_clipboard_item"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="10dp">
+
+        <!-- 图片缩略图（图片条目显示） -->
+        <ImageView
+            android:id="@+id/item_clipboard_image"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:scaleType="centerCrop"
+            android:background="#f5f5f5"
+            android:visibility="gone" />
+
+        <!-- 文本 + 日期 -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:paddingHorizontal="8dp">
+
+            <TextView
+                android:id="@+id/item_clipboard_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:maxLines="3"
+                android:ellipsize="end"
+                android:textSize="15sp"
+                android:textColor="#1a1a1a" />
+
+            <TextView
+                android:id="@+id/item_clipboard_date"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textSize="11sp"
+                android:textColor="#9e9e9e" />
+        </LinearLayout>
+
+        <!-- 置顶标记 -->
+        <ImageView
+            android:id="@+id/item_clipboard_pin"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:src="@drawable/ic_baseline_push_pin_24"
+            android:tint="#757575"
+            android:contentDescription="@string/pin"
+            android:layout_marginHorizontal="4dp"
+            android:visibility="gone" />
+
+                <!-- 分享 -->
+        <ImageView
+            android:id="@+id/item_clipboard_share"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_baseline_share_24"
+            android:tint="#757575"
+            android:contentDescription="@string/share"
+            android:layout_marginHorizontal="4dp"
+            android:padding="2dp" />
+
+        <!-- 移到分组 -->
+        <ImageView
+            android:id="@+id/item_clipboard_folder"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_baseline_folder_24"
+            android:tint="#757575"
+            android:contentDescription="@string/move_to_group"
+            android:layout_marginHorizontal="4dp"
+            android:padding="2dp" />
+
+        <!-- 删除 -->
+        <ImageView
+            android:id="@+id/item_clipboard_delete"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_baseline_delete_24"
+            android:tint="#757575"
+            android:contentDescription="@string/delete"
+            android:layout_marginHorizontal="4dp"
+            android:padding="2dp" />
+
+        <!-- 拖动排序手柄 -->
+        <ImageView
+            android:id="@+id/item_clipboard_drag"
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:src="@drawable/ic_baseline_drag_handle_24"
+            android:tint="#757575"
+            android:contentDescription="@string/clipboard_reorder_done"
+            android:layout_marginHorizontal="4dp"
+            android:padding="2dp" />
+
+    </LinearLayout>
+
+</LinearLayout>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="position_drag_handle">按住拖动 · 点按切换</string>
+    <string name="position_one_hand_handle">单手模式 · 点按切换</string>
+    <string name="position_switch_side">切换</string>
+    <string name="position_adjust">调整</string>
+    <string name="position_restore">还原</string>
+    <string name="position_width">键盘宽度</string>
+    <string name="position_horizontal">水平位置</string>
+    <string name="position_vertical">垂直位置</string>
+    <string name="position_edge_margin">靠边边距</string>
+    <string name="position_bottom_margin">底部边距</string>
+    <string name="position_floating_adjust">调整悬浮键盘</string>
+    <string name="position_one_hand_adjust">调整单手键盘</string>
+    <string name="position_reset">重置</string>
+    <string name="keyboard_layout_position">键盘布局/单手悬浮</string>
+    <string name="position_corner_radius">面板圆角</string>
+    <string name="one_hand_corner_radius">单手模式圆角</string>
+    <string name="floating_corner_radius">悬浮模式圆角</string>
+</resources>

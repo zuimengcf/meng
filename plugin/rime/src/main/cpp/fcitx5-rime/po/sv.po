@@ -1,0 +1,135 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the fcitx5-rime package.
+#
+# Translators:
+# Daniel Nylander <po@danielnylander.se>, 2026
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: fcitx5-rime\n"
+"Report-Msgid-Bugs-To: fcitx-dev@googlegroups.com\n"
+"POT-Creation-Date: 2026-09-04 20:24+0000\n"
+"PO-Revision-Date: 2017-11-23 05:02+0000\n"
+"Last-Translator: Daniel Nylander <po@danielnylander.se>, 2026\n"
+"Language-Team: Swedish (https://app.transifex.com/fcitx/teams/12005/sv/)\n"
+"Language: sv\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#: src/rimeengine.h:60
+msgid "Follow Global Configuration"
+msgstr "Följ den globala konfigurationen"
+
+#: src/rimeengine.h:60
+msgid "All"
+msgstr "Alla"
+
+#: src/rimeengine.h:61
+msgid "Program"
+msgstr "Program"
+
+#: src/rimeengine.h:61
+msgid "No"
+msgstr "Nej"
+
+#: src/rimeengine.h:65
+msgid "Do not show"
+msgstr "Visa inte"
+
+#: src/rimeengine.h:66
+msgid "Composing text"
+msgstr "Text som sammanställs"
+
+#: src/rimeengine.h:66
+msgid "Commit preview"
+msgstr "Förhandsvisning av bekräftelse"
+
+#: src/rimeengine.h:75
+msgid "Clear"
+msgstr "Rensa"
+
+#: src/rimeengine.h:76
+msgid "Commit raw input"
+msgstr "Bekräfta rå inmatning"
+
+#: src/rimeengine.h:77
+msgid "Commit composing text"
+msgstr "Bekräfta text som sammanställs"
+
+#: src/rimeengine.h:78
+msgid "Commit commit preview"
+msgstr "Bekräfta förhandsvisning"
+
+#: src/rimeengine.h:83
+msgid "Preedit Mode"
+msgstr "Förredigeringsläge"
+
+#: src/rimeengine.h:86
+msgid "Shared Input State"
+msgstr "Delat inmatningstillstånd"
+
+#: src/rimeengine.h:93
+msgid "Fix embedded preedit cursor at the beginning of the preedit"
+msgstr ""
+"Korrigera den inbäddade förredigeringsmarkören till början av förredigeringen"
+
+#: src/rimeengine.h:99
+msgid "Action when switching input method"
+msgstr "Åtgärd vid byte av inmatningsmetod"
+
+#: src/rimeengine.h:102
+msgid "User data dir"
+msgstr "Användardatakatalog"
+
+#: src/rimeengine.h:112 src/rimeengine.cpp:207
+msgid "Deploy"
+msgstr "Verkställ"
+
+#: src/rimeengine.h:116 src/rimeengine.cpp:219
+msgid "Synchronize"
+msgstr "Synkronisera"
+
+#: src/rimeengine.h:119
+msgid "Use latin mode name defined in schema"
+msgstr "Använd latinskt lägesnamn som definieras i schemat"
+
+#: src/rimecandidate.cpp:157
+msgid "Forget word"
+msgstr "Glöm ord"
+
+#: src/rimestate.cpp:78 src/rimeengine.cpp:733
+msgid "Latin Mode"
+msgstr "Latinskt läge"
+
+#: src/rimeengine.cpp:567
+msgid ""
+"Rime is under maintenance. It may take a few seconds. Please wait until it "
+"is finished..."
+msgstr "Rime underhålls. Det kan ta några sekunder. Vänta tills det är klart …"
+
+#: src/rimeengine.cpp:570
+msgid "Rime is ready."
+msgstr "Rime är klart."
+
+#: src/rimeengine.cpp:583
+msgid "Rime has encountered an error. See log for details."
+msgstr "Rime har stött på ett fel. Se loggen för detaljer."
+
+#: src/rimeengine.cpp:601 src/rime.conf.in:2 src/rime-addon.conf.in.in:2
+msgid "Rime"
+msgstr "Rime"
+
+#: org.fcitx.Fcitx5.Addon.Rime.metainfo.xml.in:7
+msgid "Rime for Fcitx 5"
+msgstr "Rime för Fcitx 5"
+
+#: org.fcitx.Fcitx5.Addon.Rime.metainfo.xml.in:8
+msgid "Rime input method"
+msgstr "Rime-inmatningsmetod"
+
+#: src/rime-addon.conf.in.in:3
+msgid "Rime Wrapper For Fcitx"
+msgstr "Rime-omslag för Fcitx"

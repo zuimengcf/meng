@@ -1,0 +1,17 @@
+option('emacs',
+  type: 'feature',
+  value: 'auto',
+  description: 'enable or disable compiling lip files using emacs'
+)
+
+option('emacs_path',
+  type: 'string',
+  value: '',
+  description: 'path to emacs command for compiling lisp files'
+)
+
+option('lisp_dir',
+  type: 'string',
+  value: '',
+  description: 'path to emacs lisp-site install directory'
+)

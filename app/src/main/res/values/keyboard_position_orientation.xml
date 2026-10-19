@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="floating_x_percent_landscape">悬浮键盘水平位置（横屏）</string>
+    <string name="floating_y_percent_landscape">悬浮键盘垂直位置（横屏）</string>
+</resources>

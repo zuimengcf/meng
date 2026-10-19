@@ -1,0 +1,32 @@
+{
+  "rows": [
+    ["np_plus", "np_1", "np_2", "np_3", "np_div"],
+    ["np_minus", "np_4", "np_5", "np_6", "mini_space"],
+    ["np_mul", "np_7", "np_8", "np_9", "backspace"],
+    ["abc", "np_comma", "sym", "np_0", "np_eq", "np_dot", "return"]
+  ],
+  "keys": {
+    "np_plus":  { "type": "numpad", "label": "+", "code": "0xffab", "width": 0.15, "variant": "alternative" },
+    "np_1":     { "type": "numpad", "label": "1", "code": "1", "width": 0, "text_size": 30 },
+    "np_2":     { "type": "numpad", "label": "2", "code": "2", "width": 0, "text_size": 30 },
+    "np_3":     { "type": "numpad", "label": "3", "code": "3", "width": 0, "text_size": 30 },
+    "np_div":   { "type": "numpad", "label": "/", "code": "0xffaf", "width": 0.15, "variant": "alternative" },
+    "np_minus": { "type": "numpad", "label": "-", "code": "0xffad", "width": 0.15, "variant": "alternative" },
+    "np_4":     { "type": "numpad", "label": "4", "code": "4", "width": 0, "text_size": 30 },
+    "np_5":     { "type": "numpad", "label": "5", "code": "5", "width": 0, "text_size": 30 },
+    "np_6":     { "type": "numpad", "label": "6", "code": "6", "width": 0, "text_size": 30 },
+    "mini_space": { "type": "mini_space" },
+    "np_mul":   { "type": "numpad", "label": "*", "code": "0xffaa", "width": 0.15, "variant": "alternative" },
+    "np_7":     { "type": "numpad", "label": "7", "code": "7", "width": 0, "text_size": 30 },
+    "np_8":     { "type": "numpad", "label": "8", "code": "8", "width": 0, "text_size": 30 },
+    "np_9":     { "type": "numpad", "label": "9", "code": "9", "width": 0, "text_size": 30 },
+    "backspace": { "type": "backspace", "width": 0.15, "variant": "alternative" },
+    "abc":      { "type": "layout_switch", "label": "ABC", "to": "Text", "width": 0.15 },
+    "np_comma": { "type": "numpad", "label": ",", "code": "0xffac", "width": 0.1, "variant": "alternative" },
+    "sym":      { "type": "layout_switch", "label": "!?#", "to": "Symbol", "width": 0.13333, "variant": "alt" },
+    "np_0":     { "type": "numpad", "label": "0", "code": "0", "width": 0.23334, "text_size": 30 },
+    "np_eq":    { "type": "numpad", "label": "=", "code": "0xffbd", "width": 0.13333, "variant": "alt" },
+    "np_dot":   { "type": "numpad", "label": ".", "code": "0xffae", "width": 0.1, "variant": "alternative" },
+    "return":   { "type": "return", "width": 0.15 }
+  }
+}

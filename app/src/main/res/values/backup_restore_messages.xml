@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="backup_restore_staged">已校验 %1$s 的备份，退出后请重新打开应用以应用恢复。</string>
+    <string name="backup_restore_applied">备份恢复已应用。</string>
+    <string name="backup_restore_original_retained">备份恢复未完成，已保留原有数据，请检查存储空间后重试。</string>
+    <string name="backup_restore_confirm">恢复会覆盖备份中对应的全部设置与数据库，包括房间密码、同步会话及本机同步身份。文件先经过校验，下次启动时应用。总备份不等同于完整的剪贴板同步历史镜像，内部操作日志不在此备份内。继续吗？</string>
+    <string name="backup_export_warning">直接导出普通 ZIP，包含全部设置和房间凭据，不加密、不设密码；凭据可被读取，请勿公开或转发。</string>
+    <string name="backup_export_complete">全部设置 ZIP 已导出，其中包含可读取的房间凭据，请妥善保管。</string>
+</resources>

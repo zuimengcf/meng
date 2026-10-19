@@ -18,20 +18,12 @@ dependencyResolutionManagement {
 
 rootProject.name = "meng"
 
+// Only modules needed to assemble :app are included.
+// The pure-native modules (lib:fcitx5, lib:fcitx5-lua, lib:libime,
+// lib:fcitx5-chinese-addons) and the standalone plugin APKs are intentionally
+// excluded: their compiled .so and runtime data are shipped statically as
+// jniLibs + assets (prebuilt from the official release), so no NDK/CMake build
+// is required anymore.
 include(":lib:common")
-include(":lib:fcitx5")
-include(":lib:fcitx5-lua")
-include(":lib:libime")
-include(":lib:fcitx5-chinese-addons")
 include(":codegen")
 include(":app")
-include(":lib:plugin-base")
-include(":plugin:anthy")
-include(":plugin:clipboard-filter")
-include(":plugin:unikey")
-include(":plugin:rime")
-include(":plugin:hangul")
-include(":plugin:chewing")
-include(":plugin:sayura")
-include(":plugin:jyutping")
-include(":plugin:thai")

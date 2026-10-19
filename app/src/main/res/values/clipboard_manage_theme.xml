@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Isolated to this activity: existing application/keyboard themes remain unchanged. -->
+    <style name="Theme.ClipboardManageMaterial" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">#4361B2</item>
+        <item name="colorPrimaryVariant">#304782</item>
+        <item name="colorSecondary">#4361B2</item>
+        <item name="android:colorAccent">#4361B2</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

@@ -1,0 +1,40 @@
+#include "wl_shm.h"
+#include <cassert>
+#include "wl_shm_pool.h"
+
+namespace fcitx::wayland {
+const struct wl_shm_listener WlShm::listener = {
+#if defined(WL_SHM_FORMAT_SINCE_VERSION)
+    .format =
+        [](void *data, wl_shm *wldata, uint32_t format) {
+            auto *obj = static_cast<WlShm *>(data);
+            assert(*obj == wldata);
+            {
+                obj->format()(format);
+            }
+        },
+#endif
+};
+
+WlShm::WlShm(wl_shm *data) : version_(wl_shm_get_version(data)), data_(data) {
+    wl_shm_set_user_data(*this, this);
+    wl_shm_add_listener(*this, &WlShm::listener, this);
+}
+
+void WlShm::destructor(wl_shm *data) {
+    const auto version = wl_shm_get_version(data);
+#if defined(WL_SHM_RELEASE_SINCE_VERSION)
+    if (version >= 2) {
+        wl_shm_release(data);
+        return;
+    }
+#endif
+    wl_shm_destroy(data);
+}
+#if defined(WL_SHM_CREATE_POOL_SINCE_VERSION)
+WlShmPool *WlShm::createPool(int32_t fd, int32_t size) {
+    return new WlShmPool(wl_shm_create_pool(*this, fd, size));
+}
+#endif
+
+} // namespace fcitx::wayland

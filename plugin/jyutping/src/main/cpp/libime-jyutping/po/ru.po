@@ -1,0 +1,95 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the fcitx5-jyutping package.
+#
+# Translators:
+# Xuetian Weng <wengxt@gmail.com>, 2022
+# Dmitry <dmitrydmitry761@gmail.com>, 2026
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: fcitx5-jyutping\n"
+"Report-Msgid-Bugs-To: fcitx-dev@googlegroups.com\n"
+"POT-Creation-Date: 2026-01-12 20:24+0000\n"
+"PO-Revision-Date: 2022-12-07 15:20+0000\n"
+"Last-Translator: Dmitry <dmitrydmitry761@gmail.com>, 2026\n"
+"Language-Team: Russian (https://app.transifex.com/fcitx/teams/12005/ru/)\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=4; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<12 || n%100>14) ? 1 : n%10==0 || (n%10>=5 && n%10<=9) || "
+"(n%100>=11 && n%100<=14)? 2 : 3);\n"
+
+#: src/engine/engine.h:28
+msgid "Candidates Per Page"
+msgstr "Количество слов-кандидатов на страницу"
+
+#: src/engine/engine.h:32
+msgid "Enable Prediction"
+msgstr "Включить прогнозирование"
+
+#: src/engine/org.fcitx.Fcitx5.Addon.Jyutping.metainfo.xml.in:7
+#: src/engine/jyutping.conf.in:2 src/engine/jyutping-addon.conf.in.in:2
+msgid "Jyutping"
+msgstr "Ютпхин"
+
+#: src/engine/org.fcitx.Fcitx5.Addon.Jyutping.metainfo.xml.in:8
+msgid "Jyutping input method"
+msgstr "Кантонский метод ввода Ютпхин"
+
+#: src/engine/engine.h:55
+msgid "Next Candidate"
+msgstr "Следующее слово-кандидат"
+
+#: src/engine/engine.h:43
+msgid "Next Page"
+msgstr "Следующая Страница"
+
+#: src/engine/engine.h:30
+msgid "Number of Predictions"
+msgstr "Количество прогнозов"
+
+#: src/engine/engine.h:59
+msgid "Number of Sentences"
+msgstr "Количество предложений"
+
+#: src/engine/engine.cpp:420
+msgid "Prediction"
+msgstr "Прогнозировать"
+
+#: src/engine/engine.cpp:694
+#, c++-format
+msgid "Press {0} for {1}"
+msgstr "Нажать {0} для {1}"
+
+#: src/engine/engine.cpp:691
+#, c++-format
+msgid "Press {0} for {1} and {2} for {3}"
+msgstr "Нажать {0} для {1} и {2} для {3}"
+
+#: src/engine/engine.h:49
+msgid "Previous Candidate"
+msgstr "Предыдущее слово-кандидат"
+
+#: src/engine/engine.h:37
+msgid "Previous Page"
+msgstr "Предыдущая страница"
+
+#: src/engine/engine.cpp:692
+msgid "Return"
+msgstr "Возврат каретки"
+
+#: src/engine/engine.cpp:421
+msgid "Show prediction words"
+msgstr "Показать связанные слова"
+
+#: src/engine/engine.h:61
+msgid "Use Inner Segment"
+msgstr "Использовать сегментацию с внутренним размытием"
+
+#: src/engine/engine.cpp:121
+#, c++-format
+msgid "{0} ({1})"
+msgstr "{0} ({1})"

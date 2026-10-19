@@ -1,0 +1,291 @@
+nihao	你好	1
+xiexie	谢谢	1
+zaijian	再见	1
+tianqi	天气	1
+wo	我	1
+women	我们	1
+jintian	今天	1
+mingtian	明天	1
+keyi	可以	1
+bu	不	1
+shi	是	1
+de	的	1
+le	了	1
+ni	你	1
+ta	他	1
+tamen	他们	1
+women	我们	1
+ren	人	1
+hao	好	1
+hen	很	1
+zai	在	1
+you	有	1
+he	和	1
+zhe	这	1
+na	那	1
+shenme	什么	1
+zenme	怎么	1
+weishenme	为什么	1
+yinwei	因为	1
+suoyi	所以	1
+ke	可	1
+yi	以	1
+qing	请	1
+wen	问	1
+xianzai	现在	1
+zuotian	昨天	1
+shijian	时间	1
+mingzi	名字	1
+shouji	手机	1
+dianhua	电话	1
+xuexi	学习	1
+gongzuo	工作	1
+shangban	上班	1
+huijia	回家	1
+chi	吃	1
+fan	饭	1
+he	喝	1
+shui	水	1
+kaixin	开心	1
+gaoxing	高兴	1
+pengyou	朋友	1
+jia	家	1
+xianzhi	先	1
+zhu	住	1
+kan	看	1
+ting	听	1
+shuo	说	1
+xiang	想	1
+yao	要	1
+jiaqiang	加强	1
+fangfa	方法	1
+wenti	问题	1
+gongsi	公司	1
+xinxi	信息	1
+shijie	世界	1
+zhongguo	中国	1
+zhongwen	中文	1
+mingbai	明白	1
+kaishi	开始	1
+jieshu	结束	1
+zhidao	知道	1
+juede	觉得	1
+xiwang	希望	1
+yinggai	应该	1
+dui对1
+duibuqi对不起1
+mei没1
+meiyou没有1
+ma吗1
+ne呢1
+ba吧1
+a啊1
+zhege这个1
+nage那个1
+zheli这里1
+nali那里1
+duoshao多少1
+zenyang怎样1
+jiushi就是1
+neng能1
+nenggou能够1
+xuyao需要1
+ruguo如果1
+danshi但是1
+erqie而且1
+huozhe或者1
+suiran虽然1
+yiding一定1
+kending肯定1
+yijing已经1
+haishi还是1
+zongshi总是1
+conglai从来1
+geng更1
+zui最1
+feichang非常1
+tebie特别1
+yiban一般1
+zhende真的1
+jiade假的1
+cuowu错误1
+zhengque正确1
+daan答案1
+jiejue解决1
+jizhu记住1
+wangji忘记1
+zhengzai正在1
+zhunbei准备1
+shenghuo生活1
+xuexiao学校1
+laoshi老师1
+xuesheng学生1
+tongxue同学1
+tongshi同事1
+lingdao领导1
+kehu客户1
+danwei单位1
+chengshi城市1
+guojia国家1
+beijing北京1
+shanghai上海1
+guangzhou广州1
+shenzhen深圳1
+didian地点1
+difang地方1
+zaoshang早上1
+zhongwu中午1
+xiawu下午1
+wanshang晚上1
+shangwu上午1
+nian年1
+yue月1
+ri日1
+xingqi星期1
+mingnian明年1
+qunian去年1
+jinnian今年1
+diannao电脑1
+wangluo网络1
+yiliao医疗1
+yisheng医生1
+yiyuan医院1
+jiankang健康1
+shenti身体1
+xiu休息1
+shuijiao睡觉1
+qilai起来1
+chifan吃饭1
+kafei咖啡1
+cha茶1
+shuiguo水果1
+pingguo苹果1
+mianbao面包1
+mifan米饭1
+mian面条1
+cai菜1
+rou肉1
+haochi好吃1
+xihuan喜欢1
+aixin爱心1
+shangxin伤心1
+danxin担心1
+zhongyao重要1
+zhengfu政府1
+gonggong公共1
+anquan安全1
+weisheng卫生1
+huanjing环境1
+xinren信任1
+bangzhu帮助1
+huanying欢迎1
+dengdai等待1
+qingshuo请说1
+qingwen请问1
+zenmeban怎么办1
+haode好的1
+meiwenti没问题1
+zhaodao找到1
+faxian发现1
+liaojie了解1
+jieshao介绍1
+tongguo通过1
+kaolv考虑1
+zhengming证明1
+shiyong使用1
+fasheng发生1
+bianhua变化1
+chenggong成功1
+shibai失败1
+jihua计划1
+mubiao目标1
+jiejian借鉴1
+tuijian推荐1
+xuanze选择1
+jueding决定1
+tongyi同意1
+jujue拒绝1
+fankui反馈1
+lianxi联系1
+dianzi电子1
+wenhua文化1
+lishi历史1
+jingji经济1
+kexue科学1
+jishu技术1
+ziran自然1
+shehui社会1
+jiaoyu教育1
+xinwen新闻1
+yinyue音乐1
+dianying电影1
+lvxing旅行1
+gouwu购物1
+jiage价格1
+qian钱1
+xiaoxi消息1
+youjian邮件1
+dizhi地址1
+mima密码1
+zhanghao账号1
+dengji登记1
+xiazai下载1
+shangchuan上传1
+dakai打开1
+guanbi关闭1
+baocun保存1
+shanchu删除1
+xiugai修改1
+chaxun查询1
+sousuo搜索1
+shuru输入1
+shuchu输出1
+chengxu程序1
+wenjian文件1
+xianshi显示1
+yincang隐藏1
+shuaxin刷新1
+shengji升级1
+banben版本1
+wancheng完成1
+renwu任务1
+yunyong运用1
+shishi实施1
+zengjia增加1
+jianshao减少1
+tigao提高1
+jiangdi降低1
+baochi保持1
+gaibian改变1
+yingxiang影响1
+zhichi支持1
+fuwu服务1
+shichang市场1
+chanpin产品1
+gongneng功能1
+zhiliang质量1
+xiaolv效率1
+chengben成本1
+shouru收入1
+zhichu支出1
+jiben基本1
+zhongxin中心1
+xinde新的1
+lao老1
+daxiao大小1
+duan短1
+chang长1
+kuai快1
+man慢1
+gaoji高级1
+jiandan简单1
+fuza复杂1
+qingchu清楚1
+mingque明确1
+ziyuan资源1
+nengli能力1
+jingyan经验1
+fangxiang方向1
+guize规则1
+biaozhun标准1
+yuanze原则1

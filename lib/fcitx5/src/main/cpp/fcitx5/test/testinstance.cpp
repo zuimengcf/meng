@@ -1,0 +1,238 @@
+/*
+ * SPDX-FileCopyrightText: 2021~2021 CSSlayer <wengxt@gmail.com>
+ *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
+ */
+#include <chrono>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <thread>
+#include <tuple>
+#include <utility>
+#include <vector>
+#include "fcitx-utils/eventdispatcher.h"
+#include "fcitx-utils/key.h"
+#include "fcitx-utils/log.h"
+#include "fcitx-utils/macros.h"
+#include "fcitx-utils/misc.h"
+#include "fcitx-utils/testing.h"
+#include "fcitx/addonmanager.h"
+#include "fcitx/event.h"
+#include "fcitx/inputmethodgroup.h"
+#include "fcitx/inputmethodmanager.h"
+#include "fcitx/instance.h"
+#include "testdir.h"
+#include "testfrontend_public.h"
+
+using namespace fcitx;
+
+namespace {
+
+void testCheckUpdate(Instance &instance) {
+    instance.eventDispatcher().schedule([&instance]() {
+        FCITX_ASSERT(!instance.checkUpdate());
+        auto hasUpdateTrue =
+            instance.watchEvent(EventType::CheckUpdate,
+                                EventWatcherPhase::Default, [](Event &event) {
+                                    auto &checkUpdate =
+                                        static_cast<CheckUpdateEvent &>(event);
+                                    checkUpdate.setHasUpdate();
+                                });
+        FCITX_ASSERT(instance.checkUpdate());
+        hasUpdateTrue.reset();
+        FCITX_ASSERT(!instance.checkUpdate());
+    });
+}
+
+void testReloadGlobalConfig(Instance &instance) {
+    instance.eventDispatcher().schedule([&instance]() {
+        bool globalConfigReloadedEventFired = false;
+        auto reloadConfigEventWatcher =
+            instance.watchEvent(EventType::GlobalConfigReloaded,
+                                EventWatcherPhase::Default, [&](Event &) {
+                                    globalConfigReloadedEventFired = true;
+                                    FCITX_INFO() << "Global config reloaded";
+                                });
+        instance.reloadConfig();
+        FCITX_ASSERT(globalConfigReloadedEventFired);
+    });
+}
+
+void testSetGroupDefaultInputMethod(Instance &instance) {
+    instance.eventDispatcher().schedule([&instance]() {
+        auto &imManager = instance.inputMethodManager();
+        auto group = imManager.currentGroup();
+        group.inputMethodList().clear();
+        group.inputMethodList().emplace_back("keyboard-us");
+        group.inputMethodList().emplace_back("testim");
+        group.setDefaultInputMethod("testim");
+        imManager.setGroup(group);
+        FCITX_ASSERT(imManager.currentGroup().defaultInputMethod() == "testim");
+
+        InputMethodGroup replacement(group.name());
+        replacement.inputMethodList().emplace_back("keyboard-us");
+        replacement.inputMethodList().emplace_back("testim");
+        imManager.setGroup(std::move(replacement));
+        FCITX_ASSERT(imManager.currentGroup().defaultInputMethod() == "testim");
+
+        InputMethodGroup invalidDefault(group.name());
+        invalidDefault.inputMethodList().emplace_back("keyboard-us");
+        invalidDefault.inputMethodList().emplace_back("testim2");
+        imManager.setGroup(std::move(invalidDefault));
+        FCITX_ASSERT(imManager.currentGroup().defaultInputMethod() ==
+                     "testim2");
+
+        InputMethodGroup fallback(group.name());
+        fallback.inputMethodList().emplace_back("keyboard-us");
+        imManager.setGroup(std::move(fallback));
+        FCITX_ASSERT(imManager.currentGroup().defaultInputMethod() ==
+                     "keyboard-us");
+    });
+}
+
+void testModifierOnlyHotkey(Instance &instance) {
+    instance.eventDispatcher().schedule([&instance]() {
+        auto defaultGroup = instance.inputMethodManager().currentGroup();
+        defaultGroup.inputMethodList().clear();
+        defaultGroup.inputMethodList().push_back(
+            InputMethodGroupItem("keyboard-us"));
+        defaultGroup.inputMethodList().push_back(
+            InputMethodGroupItem("testim"));
+        instance.inputMethodManager().setGroup(std::move(defaultGroup));
+
+        auto *testfrontend = instance.addonManager().addon("testfrontend");
+        auto uuid =
+            testfrontend->call<ITestFrontend::createInputContext>("testapp");
+        auto *ic = instance.inputContextManager().findByUUID(uuid);
+        FCITX_ASSERT(ic);
+
+        FCITX_ASSERT(instance.inputMethod(ic) == "keyboard-us");
+        // Alt trigger doesn't work since we are at first im.
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_L"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_L"), true));
+        FCITX_ASSERT(instance.inputMethod(ic) == "keyboard-us");
+
+        FCITX_ASSERT(instance.inputMethod(ic) == "keyboard-us");
+        if (isApple()) {
+            // macOS includes Shift in the modifier state on key press and
+            // removes it on key release.
+            FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+                uuid, Key("Control+Shift+Shift_L"), false));
+            FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+                uuid, Key("Control+Shift_L"), true));
+        } else {
+            FCITX_ASSERT(testfrontend->call<ITestFrontend::sendKeyEvent>(
+                uuid, Key("Control+space"), false));
+        }
+        FCITX_ASSERT(instance.inputMethod(ic) == "testim");
+
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_L"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_L"), true));
+        FCITX_ASSERT(instance.inputMethod(ic) == "keyboard-us");
+
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_L"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_L"), true));
+        FCITX_ASSERT(instance.inputMethod(ic) == "testim");
+
+        // Sleep 1 sec between press and release, should not trigger based on
+        // default 250ms.
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_L"), false));
+        std::this_thread::sleep_until(std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(1));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_L"), true));
+        FCITX_ASSERT(instance.inputMethod(ic) == "testim");
+
+        // Some other key pressed between shift, should not trigger.
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_L"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+A"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_L"), true));
+        FCITX_ASSERT(instance.inputMethod(ic) == "testim");
+
+        // Some other modifier key pressed between shift, should not trigger.
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_R"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift_L"), false));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_R"), true));
+        FCITX_ASSERT(!testfrontend->call<ITestFrontend::sendKeyEvent>(
+            uuid, Key("Shift+Shift_L"), true));
+        FCITX_ASSERT(instance.inputMethod(ic) == "testim");
+    });
+}
+
+void testXkbStateMask(Instance &instance) {
+    instance.eventDispatcher().schedule([&instance]() {
+        bool xkbStateMaskChanged = false;
+        std::optional<std::tuple<uint32_t, uint32_t, uint32_t>> savedOldMask;
+        std::optional<std::tuple<uint32_t, uint32_t, uint32_t>> savedNewMask;
+        auto connection = instance.connect<Instance::XkbStateMaskChanged>(
+            [&](const std::string &event,
+                std::optional<std::tuple<uint32_t, uint32_t, uint32_t>> oldMask,
+                std::optional<std::tuple<uint32_t, uint32_t, uint32_t>>
+                    newMask) {
+                FCITX_ASSERT(event == "testdisplay");
+                savedOldMask = oldMask;
+                savedNewMask = newMask;
+                xkbStateMaskChanged = true;
+            });
+
+        instance.updateXkbStateMask("testdisplay", 1, 2, 3);
+        FCITX_ASSERT(xkbStateMaskChanged);
+        FCITX_ASSERT(savedOldMask == std::nullopt);
+        FCITX_ASSERT(savedNewMask == std::make_tuple(1, 2, 3));
+        FCITX_ASSERT(instance.xkbStateMask("testdisplay") ==
+                     std::make_tuple(1, 2, 3));
+        FCITX_ASSERT(instance.xkbStateMask("baddisplay") == std::nullopt);
+
+        xkbStateMaskChanged = false;
+        instance.updateXkbStateMask("testdisplay", 1, 2, 3);
+        FCITX_ASSERT(!xkbStateMaskChanged);
+
+        instance.clearXkbStateMask("testdisplay");
+        FCITX_ASSERT(xkbStateMaskChanged);
+        FCITX_ASSERT(savedOldMask == std::make_tuple(1, 2, 3));
+        FCITX_ASSERT(savedNewMask == std::nullopt);
+    });
+}
+
+} // namespace
+
+int main() {
+    setupTestingEnvironmentPath(FCITX5_BINARY_DIR, {"bin"}, {"test"});
+
+    char arg0[] = "testinstance";
+    char arg1[] = "--disable=all";
+    char arg2[] = "--enable=testim,testfrontend";
+    char arg3[] = "--option=name1=opt1a:opt1b,name2=opt2a:opt2b";
+    char *argv[] = {arg0, arg1, arg2, arg3};
+    Instance instance(FCITX_ARRAY_SIZE(argv), argv);
+    instance.addonManager().registerDefaultLoader(nullptr);
+    FCITX_ASSERT(instance.addonManager().addonOptions("name1") ==
+                 std::vector<std::string>{"opt1a", "opt1b"});
+    FCITX_ASSERT(instance.addonManager().addonOptions("name2") ==
+                 std::vector<std::string>{"opt2a", "opt2b"});
+    FCITX_ASSERT(instance.addonManager().addonOptions("name3") ==
+                 std::vector<std::string>{});
+    testCheckUpdate(instance);
+    testReloadGlobalConfig(instance);
+    testSetGroupDefaultInputMethod(instance);
+    testModifierOnlyHotkey(instance);
+    testXkbStateMask(instance);
+    instance.eventDispatcher().schedule([&instance]() { instance.exit(); });
+    instance.exec();
+    return 0;
+}
