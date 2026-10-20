@@ -133,7 +133,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
      * 每台设备取各自的最大值并持久化——这样即使换主机/主机下线，
      * 每台设备仍掌握全网水位线，墓碑确认不锁死在同一台主机。
      */
-    internal fun mergeWatermarks(remote: Map<String, Long>) {
+    internal fun mergeWatermarks(remote: Map<String, Long>, durable: Boolean = false) {
         if (remote.isEmpty()) return
         val editor = syncPrefs.edit()
         remote.forEach { (deviceId, ts) ->
@@ -141,7 +141,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             val cur = syncPrefs.getLong(watermarkKey(deviceId), 0L)
             if (ts > cur) editor.putLong(watermarkKey(deviceId), ts)
         }
-        editor.apply()
+        if (durable) check(editor.commit()) { "无法持久保存备份同步水位线" } else editor.apply()
     }
 
     /**
@@ -651,72 +651,69 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /* ===== 导入 / 导出 ===== */
 
-    /** 导出本机剪切板数据库文件（含条目 + 分组）为 zip；返回导出条数。 */
-    suspend fun exportTo(output: java.io.OutputStream): Int {
-        // Room 默认启用 WAL，最新数据可能在 clbdb-wal 而未合并回主文件。
-        // 先强制 checkpoint 把 WAL 合并进主 clbdb，保证导出的 db 完整。
-        clbDb.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").close()
-        val dbFile = appContext.getDatabasePath(ClipboardDatabase.DB_NAME)
+    /** 导出一致性快照；不复制 Room 文件，因此不受 WAL 竞争影响。 */
+    suspend fun exportTo(output: java.io.OutputStream): Int = withSyncLock {
+        val payload = clbDb.withTransaction { manualBackupPacketUnlocked() }
         val packageName = org.fcitx.fcitx5.android.BuildConfig.APPLICATION_ID
         val versionName = org.fcitx.fcitx5.android.BuildConfig.VERSION_NAME
-        return ClipboardExportManager.export(dbFile, packageName, versionName, output)
+        ClipboardExportManager.export(payload.packet, packageName, versionName, output) { key -> payload.images[key]?.invoke() }
     }
 
     /**
      * 从输入流导入剪切板数据（统一 zip 载体）。
-     * 只读解析 zip 里的 `databases/clbdb`，逐条合并写入本机库（保留本机数据，跳过重复）。
-     * 返回实际新增条数。
+     * 读取便携快照或兼容的旧数据库，按稳定身份和版本合并，不清理本机数据。
+     * 返回新增、更新或图片补全的条目与分组数。
      */
-    suspend fun importFrom(input: InputStream): Int = withSyncLock {
-        val parsed = ClipboardExportManager.importFromDb(input) ?: return@withSyncLock 0
-        val incoming = parsed.first
-        val groups = parsed.second
-        var added = 0
-        clbDb.withTransaction {
-            // 1. 分组：重建分组，映射 旧分组id -> 新groupId
-            val groupIdByOldId = HashMap<Int, Int>()
-            groups.forEach { g ->
-                val now = nextMutationTime()
-                val stable = ClipboardOplog.newSyncId()
-                val newId = clbGroupDao.insert(ClipboardGroup(name = g.name, sortOrder = g.sortOrder, syncId = stable, updatedAt = now, deviceId = ClipboardOplog.deviceId)).toInt()
-                ClipboardOplog.append(ClipboardOplog.OP_GROUP_ADD, stable,
-                    group = ClipboardOplog.GroupOp(g.name, g.sortOrder), ts = now)
-                groupIdByOldId[g.id] = newId
-            }
-            // 2. 条目：按 text+sensitive 去重合并，并恢复分组归属
-            incoming.forEach { entry ->
-                val isImage = entry.type.startsWith("image/")
-                val existing = if (isImage) null else clbDao.find(entry.text, entry.sensitive)
-                val insertedId: Int = if (isImage || existing == null) {
-                    val now = nextMutationTime()
-                    val group = groupIdByOldId[entry.groupId]?.let { clbGroupDao.get(it) }
-                    val imported = entry.copy(id = 0, groupId = group?.id ?: 0, groupSyncId = group?.syncId.orEmpty(),
-                        syncId = ClipboardOplog.newSyncId(), updatedAt = now, lastModifiedBy = ClipboardOplog.deviceId)
-                    val id = clbDao.insert(imported).toInt()
-                    ClipboardOplog.append(ClipboardOplog.OP_INSERT, imported.syncId, entry = entryOp(imported), ts = now)
-                    added++
-                    id
-                } else {
-                    existing.id
-                }
-                // 已存在条目：补充分组归属
-                val newGroupId = groupIdByOldId[entry.groupId]
-                if (!isImage && newGroupId != null && newGroupId != 0) {
-                    val group = clbGroupDao.get(newGroupId)
-                    clbDao.get(insertedId)?.let { old ->
-                        val now = nextMutationTime()
-                        val updated = old.copy(groupId = newGroupId, groupSyncId = group?.syncId.orEmpty(),
-                            updatedAt = now, lastModifiedBy = ClipboardOplog.deviceId)
-                        clbDao.upsert(updated)
-                        ClipboardOplog.append(ClipboardOplog.OP_SET_GROUP, updated.syncId, entry = entryOp(updated), ts = now)
-                    }
-                }
-            }
-        }
+    suspend fun importFrom(input: InputStream): Int {
+        // Parsing is intentionally outside the lock; malformed/incorrect入口 throws a
+        // useful error instead of being reported as a successful zero-row import.
+        val imported = ClipboardExportManager.importArchive(input)
+        val changed = try { ClipboardManualRestore.merge(imported) } finally { imported.close() }
         updateItemCount()
-        added
+        return changed
     }
 
+    /** Must run under syncMutex and a Room transaction. It deliberately does not call
+     * ClipboardSnapshotStore.capture(), whose network path applies retention purge. */
+    private data class ManualBackupPayload(val packet: ClipboardSyncPacket, val images: Map<String, () -> InputStream>)
+    private suspend fun manualBackupPacketUnlocked(): ManualBackupPayload {
+        val groups = clbGroupDao.getAllIncludingAll()
+        val stableGroups = groups.associate { it.id to it.syncId.ifBlank { "legacy:${ClipboardOplog.deviceId}:group:${it.id}" } }
+        val byId = groups.associateBy { it.id }
+        val images = linkedMapOf<String, () -> InputStream>()
+        fun register(key: String, path: String?, embedded: String? = null) {
+            val file = path?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) }?.let(::File)?.takeIf { it.isFile }
+            when {
+                file != null -> images[key] = { file.inputStream() }
+                !embedded.isNullOrBlank() -> images[key] = {
+                    android.util.Base64InputStream(embedded.byteInputStream(), android.util.Base64.DEFAULT)
+                }
+                !path.isNullOrBlank() -> error("备份图片原文件已缺失，未完成备份：${File(path).name}")
+            }
+        }
+        val entries = clbDao.getAllIncludingDeleted().map { e ->
+            val id = e.syncId.ifBlank { "legacy:${ClipboardOplog.deviceId}:entry:${e.id}" }
+            if (e.type.startsWith("image/")) {
+                register("e:$id", e.imagePath)
+                check(e.deleted || images.containsKey("e:$id")) { "剪贴板图片缺失，未完成备份" }
+            }
+            SyncEntry(syncId = id, text = e.text, pinned = e.pinned, timestamp = e.timestamp,
+                type = e.type, sensitive = e.sensitive, deleted = e.deleted, groupName = byId[e.groupId]?.name.orEmpty(),
+                updatedAt = e.updatedAt, deviceId = e.lastModifiedBy,
+                groupSyncId = e.groupSyncId.ifBlank { stableGroups[e.groupId].orEmpty() }, sortOrder = e.sortOrder)
+        }
+        val syncGroups = groups.map { g -> SyncGroup(stableGroups.getValue(g.id), g.name, g.sortOrder, g.updatedAt, g.deleted, g.deviceId) }
+        val history = ClipboardOplog.readAll().map { op ->
+            val id = ClipboardOplog.revisionId(op)
+            val p = op.entry?.let { e ->
+                if (e.type.startsWith("image/")) register("h:$id", e.imagePath, e.imageData)
+                e.copy(imagePath = null, imageData = null)
+            }
+            SyncRevision(id, op.syncId, op.ts, op.deviceId, op.opType, p, op.group)
+        }
+        return ManualBackupPayload(ClipboardSyncPacket(deviceId = ClipboardOplog.deviceId, entries = entries,
+            groups = syncGroups, watermarks = allWatermarks(), history = history), images)
+    }
     suspend fun nukeTable() = withSyncLock {
         withContext(coroutineContext) {
             clbDb.clearAllTables()

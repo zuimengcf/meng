@@ -13,6 +13,8 @@ internal class BackupFileTransaction(
     private val fault: (String) -> Unit = {},
 ) {
     enum class Result { NONE, APPLIED, ORIGINAL_RETAINED }
+    var failureReason: String? = null
+        private set
 
     fun apply(): Result {
         if (state.isFile) {
@@ -29,19 +31,24 @@ internal class BackupFileTransaction(
         remove(rollback)
         check(rollback.mkdirs()) { "Cannot create backup rollback directory" }
         writeState("PREPARING")
-        val names = targets.keys.filter { File(pending, it).isDirectory }
+        val names = targets.keys.filter { File(pending, it).exists() }
         try {
+            val stagedNames = pending.listFiles().orEmpty().map { it.name }.filter { it !in setOf("journal", "metadata.json") }
+            require(stagedNames.toSet() == names.toSet()) { "Unexpected staged backup component" }
+            require(names.isNotEmpty()) { "Missing backup component; refusing empty restore" }
             File(rollback, "targets").writeText(names.joinToString("\n"))
             names.forEach { name ->
                 fault("backup:$name")
                 val original = targets.getValue(name)
                 if (original.exists()) {
-                    original.copyRecursively(File(rollback, name), overwrite = true)
+                    if (original.isDirectory) original.copyRecursively(File(rollback, name), overwrite = true)
+                    else original.copyTo(File(rollback, name), overwrite = true)
                     File(rollback, "$name.present").writeText("1")
                 } else File(rollback, "$name.absent").writeText("1")
             }
             writeState("READY")
         } catch (e: Exception) {
+            failureReason = e.message ?: e.javaClass.simpleName
             // PREPARING has never modified any live target. Never call rollback here.
             cleanup()
             return Result.ORIGINAL_RETAINED
@@ -56,12 +63,15 @@ internal class BackupFileTransaction(
                     if (name == "shared_prefs") source.listFiles().orEmpty()
                         .filter { it.isFile && it.extension == "xml" }
                         .forEach { remove(File(target, it.name + ".bak")) }
-                    source.copyRecursively(target, overwrite = true)
+                    remove(target)
+                    if (source.isDirectory) source.copyRecursively(target, overwrite = true)
+                    else source.copyTo(target, overwrite = true)
                 }
                 fault("applied:$name")
             }
             writeState("COMMITTED")
         } catch (e: Exception) {
+            failureReason = e.message ?: e.javaClass.simpleName
             try { restoreOriginal() }
             catch (recovery: Exception) {
                 throw IOException("Backup application and rollback failed; recovery files retained", recovery)
@@ -73,7 +83,8 @@ internal class BackupFileTransaction(
     }
 
     private fun applyDatabases(source: File, target: File) {
-        check(target.isDirectory || target.mkdirs()) { "Cannot create database directory" }
+        remove(target)
+        check(target.mkdirs()) { "Cannot create database directory" }
         source.listFiles()?.forEach { incoming ->
             require(incoming.isFile && !isDatabaseSidecar(incoming.name)) { "Unprepared database backup" }
             // Keep unrelated databases, but never combine an imported main file with old WAL.
@@ -89,13 +100,17 @@ internal class BackupFileTransaction(
         names.forEach { name ->
             val present = File(rollback, "$name.present").isFile
             val absent = File(rollback, "$name.absent").isFile
-            require(present != absent && (!present || File(rollback, name).isDirectory)) { "Incomplete rollback copy: $name" }
+            require(present != absent && (!present || File(rollback, name).isFile || File(rollback, name).isDirectory)) { "Incomplete rollback copy: $name" }
         }
         names.forEach { name ->
             fault("restore:$name")
             val target = targets.getValue(name)
             remove(target)
-            if (File(rollback, "$name.present").isFile) File(rollback, name).copyRecursively(target, overwrite = true)
+            if (File(rollback, "$name.present").isFile) {
+                val original = File(rollback, name)
+                if (original.isDirectory) original.copyRecursively(target, overwrite = true)
+                else original.copyTo(target, overwrite = true)
+            }
         }
         writeState("RECOVERED")
         cleanup()

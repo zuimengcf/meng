@@ -408,12 +408,12 @@
 
     <!-- 梦 · 剪切板导入/导出/同步 -->
     <string name="clipboard_export">导出剪切板</string>
-    <string name="clipboard_export_result">已导出 %1$d 条剪切板记录</string>
+    <string name="clipboard_export_result">备份完成：%1$d 条可见记录，另含分组、删除记录与同步历史</string>
     <string name="clipboard_export_full">完整备份（.zip，含分组与图片）</string>
     <string name="clipboard_export_fcitx">小企鹅 JSON（.json，纯 fcitx 兼容）</string>
     <string name="clipboard_import">导入剪切板</string>
-    <string name="clipboard_import_confirm">导入将把文件中的剪切板记录合并到本机（已存在的自动跳过），继续？</string>
-    <string name="clipboard_import_result">已导入 %1$d 条剪切板记录</string>
+    <string name="clipboard_import_confirm">将按同步身份和版本合并文字、图片、分组、排序、置顶及删除状态；较新的编辑和删除会生效，不整库清空本机。相同备份可重复导入。继续？</string>
+    <string name="clipboard_import_result">合并完成：%1$d 项记录或分组已新增、更新或补全；0 表示没有需要更新的内容</string>
     <string name="clipboard_empty">剪切板为空，没有可导出的记录</string>
     <string name="clipboard_sync">剪切板同步</string>
     <string name="clipboard_sync_short_msg">局域网房间实时双向同步，绝不整库覆盖</string>

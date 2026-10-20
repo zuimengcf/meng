@@ -9,6 +9,35 @@ import org.w3c.dom.Element
 import kotlinx.serialization.json.*
 
 internal object BackupValidation {
+    /** Packages produced by this app and its known upstream/debug identities only. */
+    fun isCompatiblePackage(source: String, target: String): Boolean {
+        val known = setOf("com.meng.ime", "com.meng.ime.debug", "org.fcitx.fcitx5.android", "org.fcitx.fcitx5.android.debug")
+        return source in known && target in known
+    }
+
+    fun fullBackupComponents(root: File, formatVersion: Int, declared: List<String>?): List<String> {
+        val legacy = listOf("shared_prefs", "databases", "external", "recently_used")
+        val known = legacy + listOf("clipboard_images", "clipboard_oplog")
+        require(formatVersion in 1..2) { "不支持的完整备份格式：$formatVersion" }
+        val components = if (formatVersion == 1) {
+            require(declared == null || declared.toSet() == legacy.toSet()) { "旧版完整备份组件声明不完整" }
+            legacy.take(3).forEach { name -> require(File(root, name).isDirectory) { "完整备份缺少 $name；剪贴板专用备份请使用“导入剪切板”" } }
+            File(root, "recently_used").apply { require(isDirectory || mkdirs()) { "无法准备最近使用记录目录" } }
+            legacy
+        } else {
+            require(declared != null && declared.size == known.size && declared.toSet() == known.toSet()) { "新版完整备份必须包含全部设置、数据库、图片和同步历史组件" }
+            declared
+        }
+        require(components.distinct().size == components.size) { "备份组件重复" }
+        val allowed = components.toSet() + "metadata.json"
+        root.listFiles().orEmpty().forEach { require(it.name in allowed) { "备份包含未声明的组件：${it.name}" } }
+        components.forEach { name ->
+            val file = File(root, name)
+            require(if (name == "clipboard_oplog") file.isFile else file.isDirectory) { "备份组件缺失或类型错误：$name" }
+        }
+        return components
+    }
+
     /** 凭据通过 UserDataManager 的可移植表示导出，不再从设置备份中排除。 */
     fun protectedPrefs(name: String): Boolean = false
 
@@ -77,5 +106,79 @@ internal object BackupValidation {
             }
             file.writeText(json.encodeToString(JsonObject(root + ("backgroundImage" to JsonObject(updated)))))
         }
+    }
+
+    /** Pure path validation used by both archive restore and JVM tests. */
+    fun clipboardImageName(path: String): String {
+        val normalized = path.replace('\\', '/')
+        val name = normalized.substringAfterLast('/')
+        require('\u0000' !in normalized && normalized.split('/').none { it == ".." || it == "." } &&
+            name.isNotBlank() && name != "." && name != ".." &&
+            name.split('/').none { it == ".." || it == "." || it.isBlank() }) { "Invalid clipboard image path" }
+        return name
+    }
+
+    fun remapClipboardPath(path: String, imageSource: File, finalImageDirectory: File): String =
+        remapClipboardPath(path, listOf(imageSource), finalImageDirectory)
+
+    fun remapClipboardPath(path: String, imageSources: List<File>, finalImageDirectory: File): String {
+        val name = clipboardImageName(path)
+        require(imageSources.any { source ->
+            val root = source.canonicalFile
+            val imported = File(root, name).canonicalFile
+            imported.isFile && imported.parentFile == root
+        }) { "Missing imported clipboard image: $name" }
+        return File(finalImageDirectory, name).absolutePath
+    }
+
+    fun remapOplogImagePaths(file: File, imageSource: File, finalImageDirectory: File) =
+        remapOplogImagePaths(file, listOf(imageSource), finalImageDirectory)
+
+    fun coalesceClipboardImages(imageSources: List<File>, target: File) {
+        if (imageSources.isEmpty()) return
+        require(target.isDirectory || target.mkdirs()) { "Cannot stage clipboard images" }
+        fun hash(file: File): String = file.inputStream().use { source ->
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(64 * 1024)
+            while (true) { val n = source.read(buffer); if (n < 0) break; md.update(buffer, 0, n) }
+            md.digest().joinToString("") { "%02x".format(it) }
+        }
+        imageSources.forEach { source ->
+            source.listFiles().orEmpty().forEach { file ->
+                require(file.isFile) { "Nested clipboard image directories are unsupported" }
+                val dest = File(target, file.name)
+                if (file.canonicalFile != dest.canonicalFile) {
+                    if (dest.exists()) require(dest.isFile && hash(file) == hash(dest)) { "Conflicting clipboard images: ${file.name}" }
+                    else file.copyTo(dest)
+                }
+            }
+        }
+    }
+
+    fun remapOplogImagePaths(file: File, imageSources: List<File>, finalImageDirectory: File) {
+        if (!file.isFile) return
+        val temporary = File(file.parentFile, file.name + ".remapping")
+        try {
+            temporary.bufferedWriter().use { out -> file.useLines { lines ->
+                lines.forEach { line ->
+                    if (line.isBlank()) out.newLine() else {
+                        fun rewrite(element: JsonElement): JsonElement = when (element) {
+                            is JsonObject -> JsonObject(element.mapValues { (key, value) ->
+                                if (key == "imagePath" && value is JsonPrimitive && value.isString && value.content.isNotBlank()) {
+                                    val mapped = runCatching { remapClipboardPath(value.content, imageSources, finalImageDirectory) }
+                                    if (mapped.isSuccess) JsonPrimitive(mapped.getOrThrow())
+                                    else if ((element["imageData"] as? JsonPrimitive)?.contentOrNull?.isNotBlank() == true) JsonNull
+                                    else throw mapped.exceptionOrNull()!!
+                                } else rewrite(value)
+                            })
+                            is JsonArray -> JsonArray(element.map(::rewrite))
+                            else -> element
+                        }
+                        out.write(Json.encodeToString(rewrite(Json.parseToJsonElement(line)))); out.newLine()
+                    }
+                }
+            } }
+            check(temporary.renameTo(file)) { "Cannot remap clipboard history" }
+        } finally { temporary.delete() }
     }
 }

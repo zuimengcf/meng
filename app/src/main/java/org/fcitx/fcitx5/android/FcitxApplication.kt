@@ -134,7 +134,8 @@ class FcitxApplication : Application() {
             val message = if (backupRestoreResult == org.fcitx.fcitx5.android.data.backup.BackupFileTransaction.Result.APPLIED)
                 R.string.backup_restore_applied else R.string.backup_restore_original_retained
             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                android.widget.Toast.makeText(ctx, message, android.widget.Toast.LENGTH_LONG).show()
+                val detail = org.fcitx.fcitx5.android.data.UserDataManager.pendingImportFailureReason()
+                android.widget.Toast.makeText(ctx, if (detail.isNullOrBlank()) ctx.getString(message) else "${ctx.getString(message)}: $detail", android.widget.Toast.LENGTH_LONG).show()
             }
         }
         Timber.d("isDirectBootMode=$isDirectBootMode")

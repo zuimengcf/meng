@@ -5,13 +5,14 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
 import kotlinx.serialization.json.encodeToStream
 import org.fcitx.fcitx5.android.BuildConfig
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.data.backup.BackupFileTransaction
 import org.fcitx.fcitx5.android.data.backup.BackupValidation
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncSettings
+import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
 import org.fcitx.fcitx5.android.utils.*
 import java.io.File
 import java.io.InputStream
@@ -21,15 +22,21 @@ import java.util.zip.ZipOutputStream
 
 /** All user settings, including room credentials; Keystore ciphertext is re-encrypted per install. */
 object UserDataManager {
-    private val json = Json { prettyPrint = true }
+    private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+    @Volatile private var lastPendingImportFailure: String? = null
     private val pending get() = File(appContext.filesDir, ".backup-import-pending")
-    @Serializable data class Metadata(val packageName: String, val versionCode: Long, val versionName: String, val exportTime: Long)
+    @Serializable data class Metadata(
+        val packageName: String, val versionCode: Long, val versionName: String, val exportTime: Long,
+        val formatVersion: Int = 1, val components: List<String>? = null,
+    )
 
     private fun dirs(context: Context) = linkedMapOf(
         "shared_prefs" to File(context.applicationInfo.dataDir, "shared_prefs"),
         "databases" to File(context.applicationInfo.dataDir, "databases"),
         "external" to (context.getExternalFilesDir(null) ?: error("External files unavailable")),
         "recently_used" to File(context.filesDir, RecentlyUsed.DIR_NAME),
+        "clipboard_images" to File(context.filesDir, "clipboard_images"),
+        "clipboard_oplog" to File(context.filesDir, "clipboard_oplog.jsonl"),
     )
 
     /** Stream backups without application-imposed size or entry-count limits. */
@@ -38,8 +45,8 @@ object UserDataManager {
             zip.writeBackupEntry(name, source)
         }
         fun tree(root: File, prefix: String, protectedPreferences: Boolean = false) {
-            if (!root.exists()) return
             entry("$prefix/")
+            if (!root.exists()) return
             root.walkTopDown().forEach { file ->
                 if (file == root || (protectedPreferences && BackupValidation.protectedPrefs(file.name))) return@forEach
                 val rel = file.relativeTo(root).invariantSeparatorsPath
@@ -101,7 +108,7 @@ object UserDataManager {
     }
 
     @OptIn(ExperimentalSerializationApi::class)
-    fun export(dest: OutputStream, timestamp: Long = System.currentTimeMillis()) = runCatching {
+    suspend fun export(dest: OutputStream, timestamp: Long = System.currentTimeMillis()) = ClipboardManager.withSyncLock { runCatching {
         withTempDir { temp ->
             val sources = dirs(appContext)
             // A synchronous commit waits for earlier SharedPreferences.apply writes.
@@ -122,14 +129,17 @@ object UserDataManager {
                                 writer.entry("shared_prefs/${file.name}", file.inputStream())
                             }
                         }
+                    } else if (name == "clipboard_oplog") {
+                        if (dir.isFile) writer.entry(name, dir.inputStream()) else writer.entry(name)
                     } else writer.tree(if (name == "databases") dbSnapshot else dir, name)
                 }
                 val info = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
-                val metadata = Metadata(info.packageName, info.versionCodeCompat, Const.versionName, timestamp)
+                val metadata = Metadata(info.packageName, info.versionCodeCompat, Const.versionName, timestamp,
+                    formatVersion = 2, components = sources.keys.toList())
                 writer.entry("metadata.json", json.encodeToString(Metadata.serializer(), metadata).byteInputStream())
             }
         }
-    }
+    } }
 
     fun import(src: InputStream) = runCatching {
         check(!pending.exists()) { "A backup restore is already pending" }
@@ -138,11 +148,15 @@ object UserDataManager {
             ZipInputStream(src.buffered()).use { it.extract(staging) }
             val metadataFile = File(staging, "metadata.json")
             if (!metadataFile.isFile) errorRuntime(R.string.exception_user_data_metadata)
-            val metadata = json.decodeFromString<Metadata>(metadataFile.readText())
-            require(metadata.packageName == BuildConfig.APPLICATION_ID || metadata.packageName.startsWith("org.fcitx.")) { appContext.getString(R.string.exception_user_data_package_name_mismatch) }
-            val allowed = dirs(appContext).keys + "metadata.json"
-            staging.listFiles().orEmpty().forEach { require(it.name in allowed) { "Unexpected backup component: ${it.name}" } }
-            dirs(appContext).keys.forEach { name -> require(!File(staging, name).exists() || File(staging, name).isDirectory) }
+            val metadataObject = json.parseToJsonElement(metadataFile.readText()).jsonObject
+            require(!File(staging, "clipboard-snapshot.json").exists() && "versionCode" in metadataObject) {
+                "这是剪贴板专用备份，请到“剪切板设置 → 导入剪切板”恢复，不要使用“导入用户数据”"
+            }
+            val metadata = json.decodeFromJsonElement<Metadata>(metadataObject)
+            require(BackupValidation.isCompatiblePackage(metadata.packageName, BuildConfig.APPLICATION_ID)) {
+                "备份来源标识 ${metadata.packageName} 与当前应用 ${BuildConfig.APPLICATION_ID} 不兼容，请核对备份文件与导入入口"
+            }
+            BackupValidation.fullBackupComponents(staging, metadata.formatVersion, metadata.components)
             val prefs = File(staging, "shared_prefs")
             prefs.walkTopDown().filter { it.isFile }.forEach { file ->
                 if (file.name.endsWith(".xml.bak")) {
@@ -162,6 +176,13 @@ object UserDataManager {
             BackupValidation.mapDefaultPreferences(prefs, metadata.packageName, BuildConfig.APPLICATION_ID)
             prepareDatabases(File(staging, "databases"))
             BackupValidation.remapThemePaths(File(staging, "external/theme"), File(dirs(appContext).getValue("external"), "theme"))
+            val imageSources = listOf("external/clipboard_images", "files/clipboard_images", "clipboard_images")
+                .map { File(staging, it) }.filter { it.isDirectory }
+            val stagedImages = File(staging, "external/clipboard_images")
+            BackupValidation.coalesceClipboardImages(imageSources, stagedImages)
+            val finalImageDirectory = File(dirs(appContext).getValue("external"), "clipboard_images")
+            remapClipboardDatabase(File(staging, "databases/clbdb"), listOf(stagedImages), finalImageDirectory)
+            BackupValidation.remapOplogImagePaths(File(staging, "clipboard_oplog"), listOf(stagedImages), finalImageDirectory)
             File(staging, "journal").writeText("READY")
             check(staging.renameTo(pending)) { "Cannot stage backup restore" }
             metadata
@@ -169,10 +190,41 @@ object UserDataManager {
     }
 
     /** Returns an explicit result for the startup notification; failures to roll back propagate. */
-    internal fun applyPendingImport(context: Context): BackupFileTransaction.Result = BackupFileTransaction(
-        File(context.filesDir, ".backup-import-pending"),
-        File(context.filesDir, ".backup-import-rollback"),
-        File(context.filesDir, ".backup-import-state"),
-        dirs(context),
-    ).apply()
+    internal fun applyPendingImport(context: Context): BackupFileTransaction.Result {
+        val transaction = BackupFileTransaction(
+            File(context.filesDir, ".backup-import-pending"),
+            File(context.filesDir, ".backup-import-rollback"),
+            File(context.filesDir, ".backup-import-state"),
+            dirs(context),
+        )
+        return try {
+            transaction.apply().also { lastPendingImportFailure = transaction.failureReason }
+        } catch (e: Exception) {
+            lastPendingImportFailure = e.message ?: e.javaClass.simpleName
+            throw e
+        }
+    }
+
+    internal fun remapClipboardDatabase(database: File, imageSources: List<File>, finalImageDirectory: File) {
+        if (!database.isFile) return
+        SQLiteDatabase.openDatabase(database.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            val hasTable = db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='clipboard'", null).use { it.moveToFirst() }
+            if (!hasTable) return
+            val hasImagePath = db.rawQuery("SELECT * FROM clipboard LIMIT 0", null).use { it.getColumnIndex("imagePath") >= 0 }
+            if (!hasImagePath) return
+            val updates = ArrayList<Pair<Int, String>>()
+            db.rawQuery("SELECT id, imagePath FROM clipboard WHERE imagePath IS NOT NULL", null).use { c ->
+                while (c.moveToNext()) updates += c.getInt(0) to BackupValidation.remapClipboardPath(c.getString(1), imageSources, finalImageDirectory)
+            }
+            db.beginTransaction()
+            try {
+                db.compileStatement("UPDATE clipboard SET imagePath=? WHERE id=?").use { statement ->
+                    updates.forEach { (id, path) -> statement.clearBindings(); statement.bindString(1, path); statement.bindLong(2, id.toLong()); statement.executeUpdateDelete() }
+                }
+                db.setTransactionSuccessful()
+            } finally { db.endTransaction() }
+        }
+    }
+
+    internal fun pendingImportFailureReason(): String? = lastPendingImportFailure
 }

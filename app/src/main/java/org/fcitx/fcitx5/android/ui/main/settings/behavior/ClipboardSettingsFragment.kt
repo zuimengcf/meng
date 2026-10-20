@@ -27,8 +27,8 @@ import org.fcitx.fcitx5.android.utils.toast
  *
  * 在原有监听设置之外，额外提供剪切板数据的：
  * - 管理：全屏卡片列表，点击条目编辑 / 删除 / 移到分组 / 拖动排序；
- * - 导出：把当前剪切板条目导出为 JSON 文件（可被小企鹅及同源版本读取）；
- * - 导入：从 JSON 文件导入剪切板条目（兼容小企鹅导出的剪切板数据）；
+ * - 导出：备份全部剪切板条目、分组、同步身份、历史与图片到 ZIP；
+ * - 导入：按稳定身份和版本合并 ZIP，兼容旧数据库备份；
  * - 分组：入口统一在全屏剪切板，包含筛选和管理。
  * 同步入口已移至「管理剪切板」页内的房间同步（顶部按钮 + 右下 FAB），本页不再放置外部同步入口。
  */
@@ -53,8 +53,8 @@ class ClipboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance
         lifecycleScope.withLoadingDialog(ctx) {
             try {
                 val added = withContext(Dispatchers.IO) {
-                    val input = ctx.contentResolver.openInputStream(uri) ?: return@withContext 0
-                    ClipboardManager.importFrom(input)
+                    val input = ctx.contentResolver.openInputStream(uri) ?: error("无法打开导入文件")
+                    input.use { ClipboardManager.importFrom(it) }
                 }
                 ctx.toast(ctx.getString(R.string.clipboard_import_result, added))
             } catch (e: Exception) {
@@ -68,8 +68,8 @@ class ClipboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance
         lifecycleScope.withLoadingDialog(ctx) {
             try {
                 val n = withContext(Dispatchers.IO) {
-                    val output = ctx.contentResolver.openOutputStream(uri) ?: return@withContext 0
-                    ClipboardManager.exportTo(output).also { output.close() }
+                    val output = ctx.contentResolver.openOutputStream(uri) ?: error("无法创建导出文件")
+                    output.use { ClipboardManager.exportTo(it) }
                 }
                 ctx.toast(ctx.getString(R.string.clipboard_export_result, n))
             } catch (e: Exception) {
@@ -87,12 +87,8 @@ class ClipboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance
         }
 
         screen.addPreference(R.string.clipboard_export) {
-            val count = ClipboardManager.itemCount
-            if (count == 0) {
-                ctx.toast(R.string.clipboard_empty)
-            } else {
-                exportResult.launch("clipboard_${iso8601UTCDateTime()}.zip")
-            }
+            // Visible count can be zero while groups, deletion tombstones and history still need backup.
+            exportResult.launch("clipboard_${iso8601UTCDateTime()}.zip")
         }
 
         screen.addPreference(R.string.clipboard_import) {
