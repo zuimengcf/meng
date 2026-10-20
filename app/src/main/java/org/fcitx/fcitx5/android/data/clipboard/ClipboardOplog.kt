@@ -2,18 +2,22 @@
 package org.fcitx.fcitx5.android.data.clipboard
 
 import android.provider.Settings
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardDatabase
+import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardJournalOutbox
 import org.fcitx.fcitx5.android.utils.appContext
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.UUID
 
-/** 追加式持久版本日志。写入失败必须抛出，使调用方的 Room 事务回滚。 */
+/** Journal writes in [withTransaction] commit through a durable Room outbox, never before the rows. */
 object ClipboardOplog {
     const val OP_INSERT = "INSERT"
     const val OP_DELETE = "DELETE"
@@ -65,6 +69,67 @@ object ClipboardOplog {
     private val deleteSyncIds = HashSet<String>()
     private var maxLocalSeq = 0L
 
+    private class Staged(val database: ClipboardDatabase) {
+        // Only this transaction's delta is copied/indexed. A million retained rows
+        // must not make every new clipboard capture clone the whole journal.
+        val known = HashMap<String, Op>()
+        val pending = ArrayList<Op>()
+        val syncIds = HashSet<String>()
+        val baselineIds = HashSet<String>()
+        val deleteIds = HashSet<String>()
+        var maxSeq = maxLocalSeq
+
+        fun add(op: Op) {
+            known[revisionId(op)] = op
+            pending += op
+            syncIds += op.syncId
+            if (op.opType == OP_INSERT || op.opType == OP_GROUP_ADD) baselineIds += op.syncId
+            if (op.opType == OP_DELETE || op.opType == OP_GROUP_DELETE) deleteIds += op.syncId
+            if (op.deviceId == deviceId) maxSeq = maxOf(maxSeq, op.seq)
+        }
+    }
+    private val staged = ThreadLocal<Staged?>()
+
+    /** Caller holds ClipboardManager's sync lock. Failed publication leaves the committed
+     * batch in Room and blocks subsequent synchronization until recovery succeeds. */
+    internal suspend fun replayPending(database: ClipboardDatabase,
+        publish: (List<Op>) -> Unit = ::appendIncomingBatch) {
+        check(staged.get() == null) { "不能在未提交的事务内发布历史日志" }
+        val outbox = database.journalOutboxDao()
+        val batches = outbox.pending()
+        if (batches.isNotEmpty()) synchronized(monitor) { recoverInterruptedTail() }
+        batches.forEach { batch ->
+            val ops = json.decodeFromString<List<Op>>(batch.payload)
+            publish(ops)
+            // Crash after fsync but before acknowledgment is safe: revision IDs deduplicate replay.
+            outbox.acknowledge(batch.id)
+        }
+    }
+
+    /** Rows and their recovery journal either commit together or roll back together.
+     * Thread-local context propagation also covers Room's transaction dispatcher. */
+    internal suspend fun <T> withTransaction(database: ClipboardDatabase,
+        publish: (List<Op>) -> Unit = ::appendIncomingBatch, block: suspend () -> T): T {
+        staged.get()?.let {
+            check(it.database === database) { "历史事务不能跨数据库嵌套" }
+            return database.withTransaction { block() }
+        }
+        replayPending(database, publish)
+        val journal = synchronized(monitor) { loaded(); Staged(database) }
+        val result = withContext(staged.asContextElement(journal)) {
+            database.withTransaction {
+                val value = block()
+                if (journal.pending.isNotEmpty()) database.journalOutboxDao().insert(
+                    ClipboardJournalOutbox(payload = json.encodeToString(journal.pending.toList())))
+                value
+            }
+        }
+        replayPending(database, publish)
+        return result
+    }
+
+    private fun visibleRows(): List<Op> = staged.get()?.let { loaded() + it.pending } ?: loaded()
+
     private fun clearLoadedState() {
         cache = null
         known.clear()
@@ -82,6 +147,11 @@ object ClipboardOplog {
         }
     }
 
+    /** Only called with a committed recovery batch, never for an arbitrary damaged log. */
+    private fun recoverInterruptedTail() {
+        if (ClipboardJournalFile.recoverInterruptedTail(oplogFile) { parse(it) != null }) clearLoadedState()
+    }
+
     private fun loaded(): MutableList<Op> {
         cache?.let { return it }
         // Only the successfully renamed journal is authoritative after an interrupted rewrite.
@@ -89,8 +159,13 @@ object ClipboardOplog {
         known.clear(); syncIds.clear(); baselineSyncIds.clear(); deleteSyncIds.clear(); maxLocalSeq = 0L
         val rows = mutableListOf<Op>()
         if (oplogFile.exists()) oplogFile.forEachLine(Charsets.UTF_8) { line ->
-            if (line.isNotBlank()) parse(line)?.let { op ->
-                if (revisionId(op) !in known) {
+            if (line.isNotBlank()) {
+                val op = parse(line) ?: error("历史日志损坏，已保留原文件并停止同步")
+                val previous = known[revisionId(op)]
+                check(previous == null || sameContent(previous, op)) {
+                    "历史日志存在序号冲突，已保留原文件并停止同步"
+                }
+                if (previous == null) {
                     known[revisionId(op)] = op; rows.add(op); index(op)
                 }
                 if (op.deviceId == deviceId) maxLocalSeq = maxOf(maxLocalSeq, op.seq)
@@ -124,6 +199,21 @@ object ClipboardOplog {
      * entirely in memory; cache/known/indexes are changed only after sync succeeds.
      */
     private fun appendBatchLocked(ops: List<Op>) {
+        staged.get()?.let { transaction ->
+            fun plan(candidate: Op) {
+                val id = revisionId(candidate)
+                val previous = transaction.known[id] ?: known[id]
+                if (previous != null) {
+                    if (!sameContent(previous, candidate) && (candidate.entry != null || candidate.group != null)) {
+                        plan(archiveOp(candidate.syncId, candidate.ts, candidate.deviceId, candidate.entry, candidate.group))
+                    }
+                    return
+                }
+                transaction.add(candidate)
+            }
+            ops.forEach(::plan)
+            return
+        }
         if (ops.isEmpty()) { loaded(); return }
         val rows = loaded()
         val pending = ArrayList<Op>()
@@ -141,20 +231,8 @@ object ClipboardOplog {
             pending += candidate
         }
         ops.forEach(::plan)
-        if (pending.isEmpty()) return
-
         try {
-            oplogFile.parentFile?.mkdirs()
-            RandomAccessFile(oplogFile, "rw").use { file ->
-                var length = file.length()
-                if (length > 0) {
-                    file.seek(length - 1)
-                    if (file.read() != '\n'.code) { file.seek(length); file.write('\n'.code); length++ }
-                }
-                file.seek(length)
-                pending.forEach { file.write((json.encodeToString(it) + "\n").toByteArray(Charsets.UTF_8)) }
-                file.fd.sync()
-            }
+            ClipboardJournalFile.append(oplogFile, pending.asSequence().map { json.encodeToString(it) })
         } catch (t: Throwable) {
             // A failed block must not make a caller believe revisions are durable. Reload
             // after a possible partial write on the next operation, then rethrow unchanged.
@@ -173,8 +251,9 @@ object ClipboardOplog {
 
     fun append(opType: String, syncId: String, entry: EntryOp? = null, group: GroupOp? = null,
         ts: Long = System.currentTimeMillis()) = synchronized(monitor) {
-        loaded(); check(maxLocalSeq < Long.MAX_VALUE) { "操作序号已耗尽" }
-        appendBatchLocked(listOf(Op(maxLocalSeq + 1, deviceId, opType, syncId, ts, entry, group)))
+        val seq = currentMaxSeq()
+        check(seq < Long.MAX_VALUE) { "操作序号已耗尽" }
+        appendBatchLocked(listOf(Op(seq + 1, deviceId, opType, syncId, ts, entry, group)))
     }
 
     fun appendIncoming(op: Op) = synchronized(monitor) { appendBatchLocked(listOf(op)) }
@@ -187,11 +266,19 @@ object ClipboardOplog {
         synchronized(monitor) { appendBatchLocked(ops) }
     }
 
-    fun readAll(): List<Op> = synchronized(monitor) { loaded().toList() }
-    fun hasSyncOp(syncId: String): Boolean = synchronized(monitor) { loaded(); syncId in syncIds }
-    fun hasBaselineOp(syncId: String): Boolean = synchronized(monitor) { loaded(); syncId in baselineSyncIds }
-    fun hasDeleteOp(syncId: String): Boolean = synchronized(monitor) { loaded(); syncId in deleteSyncIds }
-    fun currentMaxSeq(): Long = synchronized(monitor) { loaded(); maxLocalSeq }
+    fun readAll(): List<Op> = synchronized(monitor) { visibleRows().toList() }
+    fun hasSyncOp(syncId: String): Boolean = synchronized(monitor) {
+        loaded(); syncId in syncIds || staged.get()?.syncIds?.contains(syncId) == true
+    }
+    fun hasBaselineOp(syncId: String): Boolean = synchronized(monitor) {
+        loaded(); syncId in baselineSyncIds || staged.get()?.baselineIds?.contains(syncId) == true
+    }
+    fun hasDeleteOp(syncId: String): Boolean = synchronized(monitor) {
+        loaded(); syncId in deleteSyncIds || staged.get()?.deleteIds?.contains(syncId) == true
+    }
+    fun currentMaxSeq(): Long = synchronized(monitor) {
+        staged.get()?.maxSeq ?: run { loaded(); maxLocalSeq }
+    }
     fun newSyncId(): String = "$deviceId-${UUID.randomUUID()}"
 
     fun archiveBatch(items: List<Archive>) = synchronized(monitor) {

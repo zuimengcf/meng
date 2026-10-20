@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 package org.fcitx.fcitx5.android.data.clipboard
 
-import androidx.room.withTransaction
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry
@@ -19,7 +18,7 @@ object ClipboardSnapshotStore {
         ClipboardManager.enableSyncRetention()
         // Redact before constructing either entries or history, so expired plaintext never leaves the device.
         ClipboardPurge.purgeExpiredDeletedUnlocked()
-        ClipboardManager.syncDatabase().withTransaction {
+        ClipboardOplog.withTransaction(ClipboardManager.syncDatabase()) {
             val groups = ClipboardManager.syncGroupDao().getAllIncludingAll()
             val entries = ClipboardManager.syncDao().getAllIncludingDeleted()
             val byId = groups.associateBy { it.id }
@@ -66,7 +65,7 @@ object ClipboardSnapshotStore {
     }
 
     private suspend fun metadataSnapshotUnlocked(): ClipboardSyncPacket =
-        ClipboardManager.syncDatabase().withTransaction {
+        ClipboardOplog.withTransaction(ClipboardManager.syncDatabase()) {
             val groups = ClipboardManager.syncGroupDao().getAllIncludingAll()
             val byId = groups.associateBy { it.id }
             ClipboardSyncPacket(deviceId = ClipboardOplog.deviceId, groups = groups.map(::toSync),
@@ -108,7 +107,7 @@ object ClipboardSnapshotStore {
         require(packet.entries.all { it.syncId.isNotBlank() } && packet.groups.all { it.syncId.isNotBlank() }) { "同步数据缺少稳定标识" }
         require(packet.entries.map { it.syncId }.distinct().size == packet.entries.size && packet.groups.map { it.syncId }.distinct().size == packet.groups.size) { "同步包包含重复标识" }
         var changed = 0
-        ClipboardManager.syncDatabase().withTransaction {
+        ClipboardOplog.withTransaction(ClipboardManager.syncDatabase()) {
             val gd = ClipboardManager.syncGroupDao(); val ed = ClipboardManager.syncDao()
             val retentionCutoff = System.currentTimeMillis() - ClipboardPurge.DEFAULT_RETENTION_MS
             val dbExpiredDeletes = ed.findDeletedBefore(retentionCutoff)
@@ -121,8 +120,8 @@ object ClipboardSnapshotStore {
             val remoteMax = maxOf(packet.entries.maxOfOrNull { it.updatedAt } ?: 0L,
                 packet.groups.maxOfOrNull { it.updatedAt } ?: 0L, packet.history.maxOfOrNull { it.ts } ?: 0L)
             if (remoteMax > 0L) ClipboardManager.observeRemoteTime(remoteMax)
-            // Capture both winners in memory, flush all history before committing the Room transaction.
-            // Any journal failure throws and rolls back visible changes; no fsync is skipped.
+            // Capture both winners; the journal recovery batch commits with the visible rows.
+            // File publication follows the Room commit and is retried before the next sync.
             val journal = mutableListOf<ClipboardOplog.Op>()
             packet.history.forEach { h ->
                 val deleteTs = expiredDeletes[h.syncId]

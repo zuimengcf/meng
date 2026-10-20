@@ -11,8 +11,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [ClipboardEntry::class, ClipboardGroup::class],
-    version = 10,
+    entities = [ClipboardEntry::class, ClipboardGroup::class, ClipboardJournalOutbox::class],
+    version = 11,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -26,9 +26,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 abstract class ClipboardDatabase : RoomDatabase() {
     abstract fun clipboardDao(): ClipboardDao
     abstract fun clipboardGroupDao(): ClipboardGroupDao
+    abstract fun journalOutboxDao(): ClipboardJournalOutboxDao
 
     companion object {
         const val DB_NAME = "clbdb"
+
+        /** Adds only a recovery queue; no clipboard rows or existing history are removed. */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS clipboard_journal_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, payload TEXT NOT NULL)")
+            }
+        }
 
         /** 8→9：新增 lastModifiedBy 列（记录每条数据最后被哪台设备修改，多设备同步区分用）。 */
         val MIGRATION_9_10 = object : Migration(9, 10) {

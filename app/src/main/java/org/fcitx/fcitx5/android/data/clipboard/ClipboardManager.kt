@@ -12,7 +12,6 @@ import android.os.Build
 import org.fcitx.fcitx5.android.BuildConfig
 import androidx.annotation.Keep
 import androidx.room.Room
-import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -92,8 +91,10 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     /** 在同步写库锁内执行 [block]，保证所有同步写操作串行、不颠倒顺序。 */
     private var syncBaselineReady = false
     internal suspend fun <T> withSyncLock(block: suspend () -> T): T = syncMutex.withLock {
+        // Recover committed history before baseline generation, purge, export or sync.
+        ClipboardOplog.replayPending(clbDb)
         if (!syncBaselineReady) {
-            clbDb.withTransaction { ensureSyncDataUnlocked() }
+            ClipboardOplog.withTransaction(clbDb) { ensureSyncDataUnlocked() }
             syncBaselineReady = true
         }
         block()
@@ -214,7 +215,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     fun init(context: Context) {
         clbDb = Room
             .databaseBuilder(context, ClipboardDatabase::class.java, "clbdb")
-            .addMigrations(ClipboardDatabase.MIGRATION_8_9, ClipboardDatabase.MIGRATION_9_10)
+            .addMigrations(ClipboardDatabase.MIGRATION_8_9, ClipboardDatabase.MIGRATION_9_10, ClipboardDatabase.MIGRATION_10_11)
             .addCallback(object : androidx.room.RoomDatabase.Callback() {
                 override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                     super.onOpen(db)
@@ -263,7 +264,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         op.group?.let { payload ->
             val old = clbGroupDao.getBySyncId(op.syncId)
             val now = nextMutationTime()
-            clbDb.withTransaction {
+            ClipboardOplog.withTransaction(clbDb) {
                 val stable = op.syncId.ifBlank { ClipboardOplog.newSyncId() }
                 val restored = (old ?: ClipboardGroup(name = payload.name, sortOrder = payload.sortOrder))
                     .copy(name = payload.name, sortOrder = payload.sortOrder, syncId = stable,
@@ -283,7 +284,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                 ?: return@withSyncLock false
         } else null
         val now = nextMutationTime()
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val group = payload.groupSyncId.takeIf { it.isNotBlank() }?.let { clbGroupDao.getBySyncId(it) }
                 ?: payload.groupName.takeIf { it.isNotBlank() }?.let { clbGroupDao.getByName(it) }
             clbDao.upsert(local.copy(text = payload.text, pinned = payload.pinned, timestamp = payload.timestamp,
@@ -308,7 +309,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
      * 分组只存本地 Room 库，不写导出，不影响与小企鹅互操作。
      */
     suspend fun ensureDefaultImageGroup(): Int = withSyncLock {
-        clbDb.withTransaction { ensureDefaultImageGroupUnlocked() }
+        ClipboardOplog.withTransaction(clbDb) { ensureDefaultImageGroupUnlocked() }
     }
 
     private suspend fun ensureDefaultImageGroupUnlocked(): Int {
@@ -360,7 +361,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 更新某条目的手动排序位置（拖动排序用）。 */
     suspend fun reorderEntry(id: Int, sortOrder: Long) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             clbDao.get(id)?.let { old ->
                 val now = nextMutationTime()
                 val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
@@ -385,7 +386,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     private suspend fun mutateEntry(id: Int, opType: String, transform: (ClipboardEntry) -> ClipboardEntry) = withSyncLock {
         var result: ClipboardEntry? = null
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val old = clbDao.get(id) ?: return@withTransaction
             val now = nextMutationTime()
             val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
@@ -398,7 +399,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     suspend fun delete(id: Int) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val old = clbDao.get(id) ?: return@withTransaction
             val now = nextMutationTime(); val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
             clbDao.upsert(old.copy(syncId = stable, deleted = true, updatedAt = now, lastModifiedBy = ClipboardOplog.deviceId))
@@ -409,7 +410,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     suspend fun deleteAll(skipPinned: Boolean = true): IntArray = withSyncLock {
         val ids = if (skipPinned) clbDao.findUnpinnedIds() else clbDao.findAllIds()
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             ids.forEach { id ->
                 val old = clbDao.get(id) ?: return@forEach
                 val now = nextMutationTime(); val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
@@ -421,7 +422,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     suspend fun undoDelete(vararg ids: Int) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             ids.forEach { id ->
                 val old = clbDao.getAllIncludingDeleted().firstOrNull { it.id == id && it.deleted } ?: return@forEach
                 val now = nextMutationTime(); val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
@@ -437,7 +438,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         // 只物理清理“从未同步过”的本地残留（无 syncId）。
         // 带 syncId 的墓碑必须保留：它们是删除意图的传播载体，
         // 若删掉则本机快照不再包含这些条目，对端存活副本会把它们传回来造成“复活”。
-        clbDb.withTransaction { clbDao.realDeleteLocalOnly() }
+        ClipboardOplog.withTransaction(clbDb) { clbDao.realDeleteLocalOnly() }
     }
 
     /** Main-callable retention entry point; returns the number of deleted rows purged. */
@@ -467,7 +468,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     suspend fun getGroup(id: Int): ClipboardGroup? = clbGroupDao.get(id)
 
     suspend fun addGroup(name: String): Int = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val groups = clbGroupDao.getAll(); val order = (groups.maxOfOrNull { it.sortOrder } ?: 0) + 1
             val now = nextMutationTime(); val syncId = ClipboardOplog.newSyncId()
             val id = clbGroupDao.insert(ClipboardGroup(name = name, sortOrder = order, syncId = syncId, updatedAt = now, deviceId = ClipboardOplog.deviceId)).toInt()
@@ -476,7 +477,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     suspend fun renameGroup(id: Int, name: String) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val old = clbGroupDao.get(id) ?: return@withTransaction
             val now = nextMutationTime(); val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
             val updated = old.copy(name = name, syncId = stable, updatedAt = now, deviceId = ClipboardOplog.deviceId)
@@ -486,7 +487,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     suspend fun reorderGroup(id: Int, sortOrder: Int) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             clbGroupDao.get(id)?.let { old ->
                 val now = nextMutationTime(); val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
                 clbGroupDao.upsert(old.copy(sortOrder = sortOrder, syncId = stable,
@@ -499,7 +500,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 删除分组，并把该组下条目移回「未分组」。 */
     suspend fun deleteGroup(id: Int) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val group = clbGroupDao.get(id) ?: return@withTransaction
             val now = nextMutationTime(); val stable = group.syncId.ifEmpty { ClipboardOplog.newSyncId() }
             clbDao.getAllIncludingDeleted().filter { it.groupId == id }.forEach { old ->
@@ -515,7 +516,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     suspend fun setEntryGroup(entryId: Int, groupId: Int) = withSyncLock {
-        clbDb.withTransaction {
+        ClipboardOplog.withTransaction(clbDb) {
             val old = clbDao.get(entryId) ?: return@withTransaction
             val group = if (groupId == 0) null else clbGroupDao.get(groupId)
             val now = nextMutationTime(); val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
@@ -545,7 +546,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
      * 而不只限于近期复制产生的日志。生成过的数据（syncId 已在 oplog）会跳过。
      * 返回本轮新生成的基线条数。
      */
-    suspend fun ensureSyncData(): Int = withSyncLock { clbDb.withTransaction { ensureSyncDataUnlocked() } }
+    suspend fun ensureSyncData(): Int = withSyncLock { ClipboardOplog.withTransaction(clbDb) { ensureSyncDataUnlocked() } }
 
     /** Caller must hold withSyncLock and, for migration/snapshot, the Room transaction. */
     internal suspend fun ensureSyncDataUnlocked(): Int {
@@ -653,7 +654,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 导出一致性快照；不复制 Room 文件，因此不受 WAL 竞争影响。 */
     suspend fun exportTo(output: java.io.OutputStream): Int = withSyncLock {
-        val payload = clbDb.withTransaction { manualBackupPacketUnlocked() }
+        val payload = ClipboardOplog.withTransaction(clbDb) { manualBackupPacketUnlocked() }
         val packageName = org.fcitx.fcitx5.android.BuildConfig.APPLICATION_ID
         val versionName = org.fcitx.fcitx5.android.BuildConfig.VERSION_NAME
         ClipboardExportManager.export(payload.packet, packageName, versionName, output) { key -> payload.images[key]?.invoke() }
@@ -767,7 +768,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                 if (!entry.type.startsWith("image/") && entry.text.isBlank()) return@withSyncLock
                 val isImage = entry.type.startsWith("image/") && entry.imagePath != null
                 try {
-                    val captured = clbDb.withTransaction {
+                    val captured = ClipboardOplog.withTransaction(clbDb) {
                     if (!isImage) {
                         clbDao.find(entry.text, entry.sensitive)?.let { old ->
                             val now = nextMutationTime()
@@ -820,7 +821,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         }
     }
 
-    private suspend fun removeOutdated() = withSyncLock { clbDb.withTransaction { removeOutdatedUnlocked() } }
+    private suspend fun removeOutdated() = withSyncLock { ClipboardOplog.withTransaction(clbDb) { removeOutdatedUnlocked() } }
 
     private suspend fun removeOutdatedUnlocked() {
         // A replica's local history limit must never silently delete another device's shared data.

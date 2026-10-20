@@ -3,7 +3,6 @@ package org.fcitx.fcitx5.android.data.clipboard
 
 import android.util.Base64
 import android.util.Base64InputStream
-import androidx.room.withTransaction
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardDatabase
@@ -31,9 +30,13 @@ internal object ClipboardManualRestore {
     /** Injectable storage boundary also used by isolated Room instrumentation tests. */
     internal suspend fun mergeInto(database: ClipboardDatabase, imported: ClipboardExportManager.ImportedPacket,
         imageDirectory: File, appendHistory: (List<ClipboardOplog.Op>) -> Unit,
-        observeTime: (Long) -> Unit = {}): Int {
+        observeTime: (Long) -> Unit = {},
+        retainCollection: () -> Unit = ClipboardManager::enableSyncRetention): Int {
         val packet = imported.packet
         ClipboardExportManager.validatePacket(packet)
+        // A durable, fail-closed setting must precede every row/image write. It deliberately
+        // remains enabled after a failed restore: retaining extra data is safer than trimming.
+        retainCollection()
         val materialized = HashMap<String, String>()
         fun image(key: String, embedded: String?, type: String): String? = materialized[key] ?: run {
             val source = imported.imageFiles[key]
@@ -45,7 +48,7 @@ internal object ClipboardManualRestore {
             input?.let { ClipboardBackupImages.store(it, imageDirectory, type) }?.also { materialized[key] = it }
         }
         var changed = 0
-        database.withTransaction {
+        ClipboardOplog.withTransaction(database) {
             val gd = database.clipboardGroupDao(); val ed = database.clipboardDao()
             val journal = ArrayList<ClipboardOplog.Op>()
             packet.history.forEach { h ->

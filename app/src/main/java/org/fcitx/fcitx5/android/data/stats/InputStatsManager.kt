@@ -75,48 +75,27 @@ object InputStatsManager {
     fun init(context: Context) {
         if (initialized) return
         appContext = context.applicationContext
-        // 数据库结构随版本演进（v3 新增 pinyin_correct 等表）。旧库版本与当前代码
-        // 不符时，仅靠 fallbackToDestructiveMigration() 在某些 Room 版本/数据库状态下
-        // 不会触发（实测会抛 IllegalStateException "migration X to Y required"）。
-        // 这里显式检测并删除版本过旧的库文件，保证统计/联想/纠错在新 schema 下干净重建。
-        deleteOutdatedDbIfNeeded(context)
-        db = Room.databaseBuilder(context, InputStatsDatabase::class.java, InputStatsDatabase.DB_NAME)
-            .fallbackToDestructiveMigration()
-            .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
+        // Only explicit additive migrations are allowed. Unknown/corrupt files
+        // stay on disk and must not cause native learning files to be emptied.
+        val candidate = Room.databaseBuilder(context, InputStatsDatabase::class.java, InputStatsDatabase.DB_NAME)
+            .openHelperFactory(InputStatsDatabase.PRESERVING_CORRUPTION_FACTORY)
+            .addMigrations(InputStatsDatabase.MIGRATION_1_2, InputStatsDatabase.MIGRATION_2_3)
             .build()
-        dao = db.statsDao()
-        initialized = true
+        try {
+            // Room opens lazily; force migration and schema validation first.
+            candidate.openHelper.writableDatabase
+            db = candidate
+            dao = candidate.statsDao()
+            initialized = true
+        } catch (e: Exception) {
+            candidate.close()
+            Timber.e(e, "meng_stats could not be opened; preserving database and native learning files")
+            return
+        }
         val prefs = PreferenceManager.getDefaultSharedPreferences(appContext)
         // SharedPreferences keeps listeners weakly; retain a strong object field.
         prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
         enqueue { syncNativeFiles() }
-    }
-
-    /**
-     * 检测旧统计库的 PRAGMA user_version：若低于当前代码要求版本则删除整个库文件
-     * （含 -wal/-shm），让 Room 以新 schema 重建。避免升级路径缺失导致的启动崩溃。
-     */
-    private fun deleteOutdatedDbIfNeeded(context: Context) {
-        val currentVersion = InputStatsDatabase.CURRENT_VERSION
-        val dbFile = context.getDatabasePath(InputStatsDatabase.DB_NAME)
-        if (!dbFile.exists()) {
-            return
-        }
-        try {
-            // 只读方式打开并读取 user_version；不触发 Room 的迁移逻辑。
-            val ver = android.database.sqlite.SQLiteDatabase.openDatabase(
-                dbFile.path, null,
-                android.database.sqlite.SQLiteDatabase.OPEN_READONLY
-            ).use { it.version }
-            if (ver < currentVersion) {
-                Timber.i("meng_stats legacy version=$ver < current=$currentVersion; deleting to rebuild")
-                context.deleteDatabase(InputStatsDatabase.DB_NAME)
-            }
-        } catch (e: Exception) {
-            // 打开失败（损坏/锁）也删除重建，避免残留坏库
-            Timber.w(e, "check legacy meng_stats failed; deleting")
-            context.deleteDatabase(InputStatsDatabase.DB_NAME)
-        }
     }
 
     /** 数据开关只控制是否新增学习；已有库和冷启动词表仍可导出。 */
@@ -258,12 +237,13 @@ object InputStatsManager {
 
     /** 按输入码查自学习的纠错候选（count 倒序）。 */
     suspend fun correctFor(code: String, limit: Int = 10): List<PinyinCorrect> {
+        if (!initialized) return emptyList()
         val c = normalizeCode(code) ?: return emptyList()
         return dao.pinyinCorrectFor(c, limit)
     }
 
     /** 自学习映射总量（供设置页展示）。 */
-    suspend fun pinyinCorrectCount(): Long = dao.pinyinCorrectCount()
+    suspend fun pinyinCorrectCount(): Long = if (initialized) dao.pinyinCorrectCount() else 0L
 
     /**
      * 从一次上屏文本提取「尾词」用于联想预测（与学习链 [lastEndWord] 独立）。
@@ -278,6 +258,7 @@ object InputStatsManager {
      * 由候选条/设置页调用；需要统计开关开启（数据为空时自然无候选）。
      */
     suspend fun suggestNext(limit: Int = 10): List<String> {
+        if (!initialized) return emptyList()
         if (!AppPrefs.getInstance().smart.suggestEnabled.getValue()) return emptyList()
         val prev = lastEndWordForSuggest ?: return emptyList()
         return dao.assocFor(prev, limit).map { it.next }
@@ -285,6 +266,7 @@ object InputStatsManager {
 
     /** 联想预测入口（显式 prev），供测试/调试。 */
     suspend fun suggestFor(prev: String, limit: Int = 10): List<String> {
+        if (!initialized) return emptyList()
         if (!AppPrefs.getInstance().smart.suggestEnabled.getValue()) return emptyList()
         return dao.assocFor(prev, limit).map { it.next }
     }
@@ -341,24 +323,25 @@ object InputStatsManager {
 
     /* ===== 对外查询接口（供 UI 页使用） ===== */
 
-    suspend fun dailySummary(): List<InputDailyStats> = dao.getAllDaily()
+    suspend fun dailySummary(): List<InputDailyStats> = if (initialized) dao.getAllDaily() else emptyList()
 
-    suspend fun todayStats(): InputDailyStats? = dao.getDaily(today())
+    suspend fun todayStats(): InputDailyStats? = if (initialized) dao.getDaily(today()) else null
 
-    suspend fun weekStats(): List<InputDailyStats> = dao.getDailyFrom(weekStart())
+    suspend fun weekStats(): List<InputDailyStats> = if (initialized) dao.getDailyFrom(weekStart()) else emptyList()
 
-    suspend fun monthStats(): List<InputDailyStats> = dao.getDailyFrom(monthStart())
+    suspend fun monthStats(): List<InputDailyStats> = if (initialized) dao.getDailyFrom(monthStart()) else emptyList()
 
-    suspend fun topWords(limit: Int = 20): List<FreqWord> = dao.topWords(limit)
+    suspend fun topWords(limit: Int = 20): List<FreqWord> = if (initialized) dao.topWords(limit) else emptyList()
 
     /** 按「最近上屏词」取联想候选（连续性关联），功能 2 预测的数据入口。 */
-    suspend fun assocFor(prev: String, limit: Int = 10): List<WordAssoc> = dao.assocFor(prev, limit)
+    suspend fun assocFor(prev: String, limit: Int = 10): List<WordAssoc> = if (initialized) dao.assocFor(prev, limit) else emptyList()
 
-    suspend fun assocCount(): Long = dao.assocCount()
+    suspend fun assocCount(): Long = if (initialized) dao.assocCount() else 0L
 
     suspend fun clearAll() = serialized { clearAllInternal() }
 
     private suspend fun clearAllInternal() {
+        if (!initialized) return
         dao.deleteAllDaily()
         dao.deleteAllWords()
         dao.deleteAllSessions()
@@ -391,16 +374,19 @@ object InputStatsManager {
     private const val CORRECTION_FILE = "correction.dict"
     private const val CONF_FILE = "smart-input.conf"
 
-    private fun rimeUserDir(): java.io.File =
+    private fun rimeUserDir(): java.io.File? = if (::appContext.isInitialized) {
         java.io.File(appContext.getExternalFilesDir(null), "data/rime")
+    } else null
 
     suspend fun exportSuggestions(rimeUserDir: java.io.File) =
         serialized { syncNativeFiles(rimeUserDir) }
 
     fun requestNativeSync() { enqueue { syncNativeFiles() } }
 
-    internal suspend fun syncNativeFiles(dir: java.io.File = rimeUserDir()) {
-        if (!initialized) return
+    internal suspend fun syncNativeFiles(dir: java.io.File? = rimeUserDir()) {
+        // init() only sets initialized after Room migration/schema validation;
+        // failed/unknown databases must never trigger an empty native export.
+        if (!initialized || dir == null) return
         dir.mkdirs()
         val assoc = dao.allAssoc(limit = 10000)
         val habits = dao.habitMappings(limit = 10000)
