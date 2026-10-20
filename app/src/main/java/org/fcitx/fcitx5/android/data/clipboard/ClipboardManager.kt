@@ -16,6 +16,8 @@ import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -213,6 +215,12 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         clbDb = Room
             .databaseBuilder(context, ClipboardDatabase::class.java, "clbdb")
             .addMigrations(ClipboardDatabase.MIGRATION_8_9, ClipboardDatabase.MIGRATION_9_10)
+            .addCallback(object : androidx.room.RoomDatabase.Callback() {
+                override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    db.execSQL("PRAGMA secure_delete=ON")
+                }
+            })
             // A downgrade must fail instead of silently destroying the clipboard database.
             .build()
         clbDao = clbDb.clipboardDao()
@@ -222,9 +230,18 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         limitListener.onChange(limitPref.key, limitPref.getValue())
         limitPref.registerOnChangeListener(limitListener)
         launch {
+            ClipboardSyncLog.sanitizeLegacy()
+            ClipboardSyncNotificationStore.sanitizeLegacy()
+            ClipboardPurge.purgeExpiredDeleted()
             updateItemCount()
             // 预建默认「图片」分组，使剪切板窗口的分组栏首屏即能看到它
             ensureDefaultImageGroup()
+        }
+        launch {
+            while (isActive) {
+                delay(60L * 60L * 1000L)
+                runCatching { ClipboardPurge.purgeExpiredDeleted() }
+            }
         }
     }
 
@@ -232,6 +249,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 被覆盖/拒绝的版本，仅供恢复面板使用，不直接加入可见列表。 */
     suspend fun revisions(): List<SyncRevision> = withSyncLock {
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
         ClipboardOplog.readAll().asReversed().map { op ->
             SyncRevision(ClipboardOplog.revisionId(op), op.syncId, op.ts, op.deviceId, op.opType, op.entry, op.group)
         }
@@ -239,7 +257,9 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 显式恢复一个历史条目版本；恢复是新的本机版本，会正常进入同步。 */
     suspend fun restoreRevision(id: String): Boolean = withSyncLock {
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
         val op = ClipboardOplog.readAll().firstOrNull { ClipboardOplog.revisionId(it) == id } ?: return@withSyncLock false
+        if ((op.opType == ClipboardOplog.OP_DELETE && op.entry == null) || ClipboardOplog.isPurgedPayload(op)) return@withSyncLock false
         op.group?.let { payload ->
             val old = clbGroupDao.getBySyncId(op.syncId)
             val now = nextMutationTime()
@@ -258,8 +278,8 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         val local = clbDao.getBySyncId(op.syncId) ?: ClipboardEntry(text = payload.text, syncId = op.syncId)
         val imagePath = if (payload.type.startsWith("image/")) {
             imageBase64ToFile(payload.imageData, payload.type)
-                ?: payload.imagePath?.takeIf { File(it).isFile }
-                ?: local.imagePath?.takeIf { File(it).isFile }
+                ?: payload.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
+                ?: local.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
                 ?: return@withSyncLock false
         } else null
         val now = nextMutationTime()
@@ -419,6 +439,12 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         // 若删掉则本机快照不再包含这些条目，对端存活副本会把它们传回来造成“复活”。
         clbDb.withTransaction { clbDao.realDeleteLocalOnly() }
     }
+
+    /** Main-callable retention entry point; returns the number of deleted rows purged. */
+    suspend fun purgeExpiredDeleted(
+        now: Long = System.currentTimeMillis(),
+        retentionMs: Long = ClipboardPurge.DEFAULT_RETENTION_MS,
+    ): Int = ClipboardPurge.purgeExpiredDeleted(now, retentionMs)
 
     /* ===== 搜索（额外配置，快速寻找） ===== */
 
@@ -790,7 +816,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                     updateLastEntry(captured)
                     updateItemCount()
                 } catch (exception: Exception) {
-                    Timber.w("Failed to update clipboard database: $exception")
+                    Timber.w("Failed to update clipboard database (%s)", exception.javaClass.simpleName)
                     updateLastEntry(entry)
                 }
             }
@@ -884,7 +910,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                 imagePath = file.absolutePath,
             )
         } catch (e: Exception) {
-            Timber.w(e, "Failed to capture clipboard image")
+            Timber.w("Failed to capture clipboard image (%s)", e.javaClass.simpleName)
             null
         }
     }

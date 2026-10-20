@@ -73,8 +73,20 @@ object ClipboardSyncNotificationStore {
         val raw = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RESULTS, null) ?: return emptyList()
         return runCatching {
             val array = JSONArray(raw)
-            (0 until array.length()).mapNotNull { decode(array.getJSONObject(it)) }
+            (0 until array.length()).mapNotNull { decode(array.getJSONObject(it)) }.map { result ->
+                result.copy(role = "同步", addedDetails = sanitize(result.addedDetails),
+                    updatedDetails = sanitize(result.updatedDetails), deletedDetails = sanitize(result.deletedDetails))
+            }
         }.getOrDefault(emptyList())
+    }
+
+    /** Replace legacy previews on disk as well as on screen; counts/results are retained. */
+    @Synchronized fun sanitizeLegacy() {
+        runCatching {
+            val rows = recent()
+            appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_RESULTS, JSONArray(rows.take(MAX_RESULTS).map(::encode)).toString()).commit()
+        }
     }
 
     fun latest(): ClipboardSyncResult? = recent().firstOrNull()
@@ -82,8 +94,9 @@ object ClipboardSyncNotificationStore {
     fun removeListener(listener: (ClipboardSyncResult) -> Unit) { listeners -= listener }
 
     private fun sanitize(rows: List<ClipboardSyncChange>) = rows.map { row ->
-        // Summary already redacts sensitive data; enforce it again at this persistence boundary.
-        row.copy(preview = if (row.preview.contains("敏感")) "敏感内容（不显示）" else row.preview.take(80))
+        // No free-text fields, including remote IDs/group names, enter the result log.
+        row.copy(syncId = "", action = row.action.takeIf { it in setOf("新增", "编辑", "删除") } ?: "变更",
+            preview = if (row.isGroup) "分组条目（不记录名称）" else "剪切板条目（不记录正文）")
     }
     private fun encode(result: ClipboardSyncResult) = JSONObject().apply {
         put("timestamp", result.timestamp); put("role", result.role); put("added", result.added)

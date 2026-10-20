@@ -3,6 +3,7 @@ package org.fcitx.fcitx5.android.data.clipboard
 import kotlinx.serialization.Serializable
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import javax.crypto.Mac
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.LinkedHashMap
@@ -68,6 +69,19 @@ object ClipboardSyncCrypto {
 
     fun requestId(): String = java.util.UUID.randomUUID().toString()
     fun statusHash(value: String): String = hex(MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8)))
+    /** Header proof used to reject unauthenticated oversized requests before reading the body. */
+    fun requestProof(password: String, requestId: String, scope: String = "sync", issuedAt: Long = 0L): String {
+        require(password.isNotEmpty() && requestId.isNotBlank())
+        require(scope == "sync" || scope == "mcp")
+        // Fixed domain salt permits server-side caching before body authentication and avoids
+        // letting an attacker force a new expensive KDF salt on every connection.
+        val proofKey = key(password, "clipboard-header-auth-v1".toByteArray(StandardCharsets.UTF_8))
+        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(proofKey.encoded, "HmacSHA256")) }
+        return b64(mac.doFinal("$scope|$requestId|$issuedAt".toByteArray(StandardCharsets.UTF_8)))
+    }
+
+    fun constantTimeEquals(left: String, right: String): Boolean =
+        MessageDigest.isEqual(left.toByteArray(StandardCharsets.UTF_8), right.toByteArray(StandardCharsets.UTF_8))
 
     fun encrypt(password: String, requestId: String, clientId: String, plaintext: String, direction: String = REQUEST_DIRECTION, now: Long = System.currentTimeMillis()): ClipboardSyncEnvelope {
         require(password.isNotEmpty()) { "room password must not be empty" }

@@ -58,6 +58,11 @@ object McpServer {
 
     init { registerTools() }
 
+    /** Room passwords are never accepted as MCP credentials. */
+    fun isValidToken(token: String?): Boolean = token != null && ClipboardSyncSettings.getMcpToken()?.let {
+        java.security.MessageDigest.isEqual(it.toByteArray(), token.toByteArray())
+    } == true
+
     /** Returns one response, or the empty string for a valid notification. */
     fun handle(raw: String): String {
         val element = runCatching { json.parseToJsonElement(raw) }.getOrNull()

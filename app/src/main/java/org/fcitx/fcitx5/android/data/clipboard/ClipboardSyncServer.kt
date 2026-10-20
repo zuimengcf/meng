@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -38,11 +39,14 @@ object ClipboardSyncServer {
     private const val TTL = 15_000L
     private const val MAX_HEADER = 16 * 1024
     private const val MAX_BODY = 128 * 1024 * 1024
+    private const val HEADER_TIMEOUT_MS = 10_000
+    private const val BODY_TIMEOUT_MS = 30_000
     private val online = ConcurrentHashMap<String, Long>()
     private val requestIds = ConcurrentHashMap<String, Long>()
     private val lock = Mutex()
     private val clients = Semaphore(8)
     private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
+    private val bodyBudget = ClipboardRequestBudget(MAX_BODY.toLong())
 
     val isRunning get() = running.get()
     val port get() = serverPort
@@ -59,7 +63,7 @@ object ClipboardSyncServer {
         if (running.get()) return serverPort
         return withContext(Dispatchers.IO) {
             try {
-                val ss = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(port)) }
+                val ss = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(port), 8) }
                 socket = ss; serverPort = ss.localPort; password = roomPassword; running.set(true)
                 ClipboardSyncDiscovery.startDiscovery(serverPort)
                 acceptJob = scope.launch {
@@ -90,25 +94,58 @@ object ClipboardSyncServer {
 
     private suspend fun handle(client: Socket, onClientSynced: (Int) -> Unit) {
         client.use { s ->
+            var reservedBytes = 0L
+            // SO_TIMEOUT does not bound writes: also close clients that stop reading a response.
+            val lifetime = scope.launch { delay(60_000L); runCatching { s.close() } }
             try {
-                s.soTimeout = 60_000
-                val input = s.getInputStream(); val headers = ByteArrayOutputStreamLimited(MAX_HEADER); var state = 0
-                while (true) { val b = input.read(); if (b < 0) throw IllegalArgumentException("header eof"); headers.write(b); state = if ((state == 0 && b == 13) || (state == 1 && b == 10) || (state == 2 && b == 13) || (state == 3 && b == 10)) state + 1 else if (b == 13) 1 else 0; if (state == 4) break }
-                val hs = headers.toString(Charsets.UTF_8.name()).split("\r\n"); val first = hs.first().split(" ")
-                if (first.size < 2 || first[0] != "POST") { writeResponse(s, 403, "仅允许加密 POST /sync 请求".toByteArray()); return }
-                if (first[1] == "/mcp") { writeResponse(s, 426, "旧版明文 MCP 已禁用，请使用加密 wire.kind=mcp".toByteArray()); return }
-                if (first[1] != "/sync") { writeResponse(s, 403, "仅允许 POST /sync".toByteArray()); return }
-                val len = hs.firstOrNull { it.startsWith("Content-Length:", true) }?.substringAfter(":")?.trim()?.toLongOrNull()
+                s.soTimeout = HEADER_TIMEOUT_MS
+                val headerDeadline = System.nanoTime() + HEADER_TIMEOUT_MS * 1_000_000L
+                val input = s.getInputStream()
+                val headers = ByteArrayOutputStreamLimited(MAX_HEADER)
+                var state = 0
+                while (true) {
+                    setRemainingTimeout(s, headerDeadline)
+                    val b = input.read()
+                    if (b < 0) throw IllegalArgumentException("header eof")
+                    headers.write(b)
+                    state = if ((state == 0 && b == 13) || (state == 1 && b == 10) || (state == 2 && b == 13) || (state == 3 && b == 10)) state + 1 else if (b == 13) 1 else 0
+                    if (state == 4) break
+                }
+                val lines = headers.toString(Charsets.UTF_8.name()).split("\r\n")
+                val first = lines.firstOrNull()?.split(" ") ?: emptyList()
+                if (first.size < 2 || first[0] != "POST" || first[1] != "/sync") {
+                    writeResponse(s, if (first.getOrNull(1) == "/mcp") 426 else 403, "仅允许加密 POST /sync 请求".toByteArray()); return
+                }
+                val fields = lines.drop(1).mapNotNull { line -> line.indexOf(':').takeIf { it > 0 }?.let { line.substring(0, it).trim().lowercase() to line.substring(it + 1).trim() } }.toMap()
+                val len = fields["content-length"]?.toLongOrNull()
                 if (len == null || len !in 1..MAX_BODY) { writeResponse(s, 413, "请求体过大或缺少长度".toByteArray()); return }
-                val body = readExact(input, len.toInt()); val env = json.decodeFromString<ClipboardSyncEnvelope>(String(body, Charsets.UTF_8))
-                if (env.protocolVersion != ClipboardSyncCrypto.PROTOCOL_VERSION || env.direction != ClipboardSyncCrypto.REQUEST_DIRECTION || env.clientId.isBlank() || env.requestId.isBlank()) throw SecurityException("invalid authenticated envelope")
-                // Authenticate and validate the payload before inserting requestId into replay cache.
-                val req = json.decodeFromString<ClipboardSyncWireRequest>(ClipboardSyncCrypto.decrypt(password, env, ClipboardSyncCrypto.REQUEST_DIRECTION))
+                val requestId = fields["x-clipboard-sync-request"]
+                val proof = fields["x-clipboard-sync-proof"]
+                // Never accept a raw token over the room's HTTP transport.
+                if (fields.containsKey("authorization")) throw SecurityException("plaintext credential header disabled")
+                val requestScope = fields["x-clipboard-sync-scope"] ?: "sync"
+                val controlToken = if (requestScope == "mcp" && McpServer.enabled) ClipboardSyncSettings.getMcpToken() else null
+                val issuedAt = fields["x-clipboard-sync-issued-at"]?.toLongOrNull() ?: 0L
+                val grant = ClipboardRequestAuth.authorize(password, requestId, proof, requestScope, controlToken, issuedAt)
+                if (grant == null) { writeResponse(s, 403, "认证失败".toByteArray()); return }
+                purge()
+                if (requestIds.size >= 4096) { writeResponse(s, 503, "请求过于频繁，请稍后重试".toByteArray()); return }
+                if (requestIds.putIfAbsent(checkNotNull(requestId), System.currentTimeMillis()) != null) throw SecurityException("replay")
+                if (!bodyBudget.reserve(len)) { writeResponse(s, 503, "同步繁忙，请稍后重试".toByteArray()); return }
+                reservedBytes = len
+                s.soTimeout = BODY_TIMEOUT_MS
+                val body = readExact(s, input, len.toInt())
+                val env = json.decodeFromString<ClipboardSyncEnvelope>(String(body, Charsets.UTF_8))
+                if (env.protocolVersion != ClipboardSyncCrypto.PROTOCOL_VERSION || env.direction != ClipboardSyncCrypto.REQUEST_DIRECTION || env.clientId.isBlank() || env.requestId.isBlank() || env.requestId != requestId || env.issuedAt != issuedAt) throw SecurityException("invalid authenticated envelope")
+                val controlAuthorized = grant == ClipboardRequestAuth.Grant.CONTROL
+                val credential = if (controlAuthorized) checkNotNull(controlToken) else password
+                val req = json.decodeFromString<ClipboardSyncWireRequest>(ClipboardSyncCrypto.decrypt(credential, env, ClipboardSyncCrypto.REQUEST_DIRECTION))
                 if (req.clientId.isBlank() || req.clientId != env.clientId) throw SecurityException("client binding failed")
-                if (requestIds.putIfAbsent(env.requestId, System.currentTimeMillis()) != null) throw SecurityException("replay")
-                online[req.clientId] = System.currentTimeMillis(); purge()
-                val result = lock.withLock { process(req, env.requestId, onClientSynced) }
-                val outEnv = ClipboardSyncCrypto.encrypt(password, env.requestId, env.clientId, json.encodeToString(result), ClipboardSyncCrypto.RESPONSE_DIRECTION)
+                if (controlAuthorized && req.kind != "mcp") throw SecurityException("MCP token cannot authorize sync")
+                if (!controlAuthorized) online[req.clientId] = System.currentTimeMillis()
+                purge()
+                val result = lock.withLock { process(req, env.requestId, onClientSynced, controlAuthorized) }
+                val outEnv = ClipboardSyncCrypto.encrypt(credential, env.requestId, env.clientId, json.encodeToString(result), ClipboardSyncCrypto.RESPONSE_DIRECTION)
                 writeResponse(s, 200, json.encodeToString(outEnv).toByteArray())
             } catch (e: SerializationException) {
                 Timber.w("legacy or malformed clipboard request rejected (%s)", e.javaClass.simpleName)
@@ -116,13 +153,16 @@ object ClipboardSyncServer {
             } catch (e: Exception) {
                 Timber.w("clipboard request rejected (%s)", e.javaClass.simpleName)
                 runCatching { writeResponse(s, if (e is SecurityException) 403 else 400, "同步请求被拒绝，请检查密码、协议版本、存储空间与数据完整性".toByteArray()) }
+            } finally {
+                lifetime.cancel()
+                if (reservedBytes > 0) bodyBudget.release(reservedBytes)
             }
         }
     }
 
-    private suspend fun process(req: ClipboardSyncWireRequest, requestId: String, onClientSynced: (Int) -> Unit): ClipboardSyncWireResponse {
+    private suspend fun process(req: ClipboardSyncWireRequest, requestId: String, onClientSynced: (Int) -> Unit, mcpAuthorized: Boolean): ClipboardSyncWireResponse {
         if (req.kind == "mcp") {
-            if (!McpServer.enabled) return ClipboardSyncWireResponse(false, requestId, "mcp", error = "MCP 服务未启用")
+            if (!mcpAuthorized || !McpServer.enabled) return ClipboardSyncWireResponse(false, requestId, "mcp", error = "MCP 未配置独立令牌或服务未启用")
             return ClipboardSyncWireResponse(true, requestId, "mcp", packetJson = McpServer.handle(req.packetJson ?: ""))
         }
         if (req.kind == "heartbeat") return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId)
@@ -140,7 +180,22 @@ object ClipboardSyncServer {
             inventory = if (req.inventory != null) inventory else null)
     }
 
-    private fun readExact(input: InputStream, length: Int): ByteArray { val body = ByteArray(length); var off = 0; while (off < length) { val n = input.read(body, off, length - off); if (n < 0) throw IllegalArgumentException("body eof"); off += n }; return body }
+    private fun setRemainingTimeout(socket: Socket, deadline: Long) {
+        val remaining = deadline - System.nanoTime()
+        if (remaining <= 0) throw java.net.SocketTimeoutException("request deadline")
+        socket.soTimeout = ((remaining + 999_999L) / 1_000_000L).coerceIn(1, Int.MAX_VALUE.toLong()).toInt()
+    }
+    private fun readExact(socket: Socket, input: InputStream, length: Int): ByteArray {
+        val deadline = System.nanoTime() + BODY_TIMEOUT_MS * 1_000_000L
+        val body = ByteArray(length); var off = 0
+        while (off < length) {
+            setRemainingTimeout(socket, deadline)
+            val n = input.read(body, off, length - off)
+            if (n < 0) throw IllegalArgumentException("body eof")
+            off += n
+        }
+        return body
+    }
     private fun writeResponse(s: Socket, code: Int, body: ByteArray) { val reason = when (code) { 200 -> "OK"; 403 -> "Forbidden"; 413 -> "Payload Too Large"; else -> "Bad Request" }; val out = s.getOutputStream(); out.write("HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray()); out.write(body); out.flush() }
     private class ByteArrayOutputStreamLimited(private val max: Int) : java.io.ByteArrayOutputStream() { override fun write(b: Int) { if (count >= max) throw IllegalArgumentException("headers too large"); super.write(b) } }
 }

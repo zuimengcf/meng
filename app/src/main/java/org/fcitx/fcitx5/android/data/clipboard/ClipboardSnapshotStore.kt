@@ -17,6 +17,8 @@ object ClipboardSnapshotStore {
     suspend fun snapshot(): ClipboardSyncPacket = capture().packet
     suspend fun capture(): Capture = ClipboardManager.withSyncLock {
         ClipboardManager.enableSyncRetention()
+        // Redact before constructing either entries or history, so expired plaintext never leaves the device.
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
         ClipboardManager.syncDatabase().withTransaction {
             val groups = ClipboardManager.syncGroupDao().getAllIncludingAll()
             val entries = ClipboardManager.syncDao().getAllIncludingDeleted()
@@ -26,7 +28,7 @@ object ClipboardSnapshotStore {
             val history = ClipboardOplog.readAll().map { op ->
                 val payload = op.entry?.let { p ->
                     // Old on-device journal rows reference private image files, never remote absolute paths.
-                    p.copy(imagePath = null, imageData = p.imageData ?: p.imagePath?.takeIf { File(it).isFile }?.let(::imageFileToBase64))
+                    p.copy(imagePath = null, imageData = p.imageData ?: p.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }?.let(::imageFileToBase64))
                 }
                 SyncRevision(ClipboardOplog.revisionId(op), op.syncId, op.ts, op.deviceId, op.opType, payload, op.group)
             }
@@ -72,7 +74,7 @@ object ClipboardSnapshotStore {
         }
 
     private fun toSync(e: ClipboardEntry, group: ClipboardGroup?, includeImage: Boolean = true): SyncEntry {
-        val image = if (includeImage && !e.deleted && e.type.startsWith("image/") && e.imagePath?.let { File(it).isFile } == true)
+        val image = if (includeImage && !e.deleted && e.type.startsWith("image/") && e.imagePath?.let { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile } == true)
             imageFileToBase64(e.imagePath) ?: error("图片读取失败，未确认同步完成") else null
         return SyncEntry(syncId = e.syncId, text = e.text, pinned = e.pinned, timestamp = e.timestamp,
             type = e.type, sensitive = e.sensitive, deleted = e.deleted,
@@ -99,12 +101,22 @@ object ClipboardSnapshotStore {
     }
 
     private suspend fun mergeUnlocked(packet: ClipboardSyncPacket): Int {
+        // Run before every sync merge.  Keep only metadata tombstones for expired rows;
+        // an old remote inventory/history must not resurrect their cleared plaintext.
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
         require(packet.protocolVersion == 2) { "同步协议不兼容，请升级双方应用" }
         require(packet.entries.all { it.syncId.isNotBlank() } && packet.groups.all { it.syncId.isNotBlank() }) { "同步数据缺少稳定标识" }
         require(packet.entries.map { it.syncId }.distinct().size == packet.entries.size && packet.groups.map { it.syncId }.distinct().size == packet.groups.size) { "同步包包含重复标识" }
         var changed = 0
         ClipboardManager.syncDatabase().withTransaction {
             val gd = ClipboardManager.syncGroupDao(); val ed = ClipboardManager.syncDao()
+            val retentionCutoff = System.currentTimeMillis() - ClipboardPurge.DEFAULT_RETENTION_MS
+            val dbExpiredDeletes = ed.findDeletedBefore(retentionCutoff)
+                .filter { it.syncId.isNotBlank() }
+                .associate { it.syncId to it.updatedAt }
+            val expiredDeletes = (ClipboardOplog.expiredDeleteTimes(retentionCutoff).entries + dbExpiredDeletes.entries)
+                .groupBy { it.key }
+                .mapValues { (_, values) -> values.maxOf { it.value } }
             // One durable clock advance per packet, not one blocking preference commit per row.
             val remoteMax = maxOf(packet.entries.maxOfOrNull { it.updatedAt } ?: 0L,
                 packet.groups.maxOfOrNull { it.updatedAt } ?: 0L, packet.history.maxOfOrNull { it.ts } ?: 0L)
@@ -113,10 +125,14 @@ object ClipboardSnapshotStore {
             // Any journal failure throws and rolls back visible changes; no fsync is skipped.
             val journal = mutableListOf<ClipboardOplog.Op>()
             packet.history.forEach { h ->
+                val deleteTs = expiredDeletes[h.syncId]
+                val entry = h.entry?.let { p ->
+                    if (deleteTs != null && h.ts <= deleteTs) p.copy(text = "", imagePath = null, imageData = null) else p
+                }
                 val seq = h.id.substringAfterLast(':').toLongOrNull() ?: error("无效历史版本标识")
                 require(seq >= 0 && h.id == "${h.deviceId}:$seq") { "历史版本标识不匹配" }
                 journal += ClipboardOplog.Op(seq, h.deviceId, h.opType, h.syncId, h.ts,
-                    h.entry?.copy(imagePath = null), h.group)
+                    entry?.copy(imagePath = null), h.group)
             }
             packet.groups.sortedBy { it.syncId }.forEach { r ->
                 val local = gd.getBySyncId(r.syncId)
@@ -130,6 +146,8 @@ object ClipboardSnapshotStore {
                 }
             }
             packet.entries.sortedBy { it.syncId }.forEach { r ->
+                val deleteTs = expiredDeletes[r.syncId]
+                if (deleteTs != null && r.updatedAt <= deleteTs) return@forEach
                 val local = ed.getBySyncId(r.syncId)
                 val localGroup = local?.let { gd.get(it.groupId) }
                 val localWire = local?.let { toSync(it, localGroup) }
@@ -137,7 +155,7 @@ object ClipboardSnapshotStore {
                 val cmp = if (localWire == null) 1 else compare(r.updatedAt, r.deviceId, semantic(r),
                     localWire.updatedAt, localWire.deviceId, semantic(localWire))
                 val repair = local != null && ClipboardSyncRules.canRepairMissingImage(cmp, r.deleted,
-                    r.type.startsWith("image/"), local.imagePath?.let { File(it).isFile } == true, !r.imageData.isNullOrBlank())
+                    r.type.startsWith("image/"), local.imagePath?.let { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile } == true, !r.imageData.isNullOrBlank())
                 if (cmp <= 0) {
                     if (repair) {
                         val path = imageBase64ToFile(r.imageData, r.type) ?: error("图片补传写入失败")
@@ -148,7 +166,7 @@ object ClipboardSnapshotStore {
                 val group = r.groupSyncId.takeIf { it.isNotBlank() }?.let { gd.getBySyncId(it) }
                 val path = if (!r.deleted && r.type.startsWith("image/")) {
                     if (!r.imageData.isNullOrBlank()) imageBase64ToFile(r.imageData, r.type) ?: error("图片写入失败，未确认同步完成")
-                    else local?.imagePath?.takeIf { File(it).isFile }
+                    else local?.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
                 } else local?.imagePath // Keep source for explicit undo/history; never send deleted image bytes.
                 ed.upsert(ClipboardEntry(id = local?.id ?: 0, text = r.text, pinned = r.pinned, timestamp = r.timestamp,
                     type = r.type, deleted = r.deleted, sensitive = r.sensitive, imagePath = path,

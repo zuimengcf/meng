@@ -47,6 +47,7 @@ object ClipboardOplog {
     private val json = Json { ignoreUnknownKeys = true }
     private val monitor = Any()
     private val oplogFile: File by lazy { File(appContext.filesDir, "clipboard_oplog.jsonl") }
+    private val rewriteFile: File by lazy { File(appContext.filesDir, "clipboard_oplog.jsonl.redacting") }
     val deviceId: String by lazy {
         runCatching { Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID) }
             .getOrNull()?.takeIf { it.isNotBlank() } ?: run {
@@ -83,6 +84,8 @@ object ClipboardOplog {
 
     private fun loaded(): MutableList<Op> {
         cache?.let { return it }
+        // Only the successfully renamed journal is authoritative after an interrupted rewrite.
+        check(!rewriteFile.exists() || rewriteFile.delete()) { "无法清理中断的历史日志临时文件" }
         known.clear(); syncIds.clear(); baselineSyncIds.clear(); deleteSyncIds.clear(); maxLocalSeq = 0L
         val rows = mutableListOf<Op>()
         if (oplogFile.exists()) oplogFile.forEachLine(Charsets.UTF_8) { line ->
@@ -160,6 +163,10 @@ object ClipboardOplog {
         }
         pending.forEach { op -> rows += op; known[revisionId(op)] = op; index(op) }
         pending.filter { it.deviceId == deviceId }.forEach { maxLocalSeq = maxOf(maxLocalSeq, it.seq) }
+        // Audit only operation type/count; never expose text, ids, or group names.
+        pending.groupingBy { it.opType }.eachCount().forEach { (type, count) ->
+            runCatching { ClipboardAuditLog.record(type, count) }
+        }
         // Wake the sync client only after the complete block is durable, and only once.
         ClipboardSyncSignal.changed()
     }
@@ -194,5 +201,66 @@ object ClipboardOplog {
     /** Legacy single-item archive API. */
     fun archive(syncId: String, ts: Long, modifier: String, entry: EntryOp? = null, group: GroupOp? = null) {
         archiveBatch(listOf(Archive(syncId, ts, modifier, entry, group)))
+    }
+
+    /**
+     * Strip old deleted-entry content from the journal without removing its tombstone.
+     * The rewrite is atomic and fsynced; a stale remote history packet is subsequently
+     * unable to reintroduce the old text because the local delete marker remains.
+     */
+    /** Pure retention rule: a revision is redactable only when it predates its expired DELETE. */
+    internal fun shouldRedactRevision(revisionTs: Long, expiredDeleteTs: Long?): Boolean =
+        expiredDeleteTs != null && revisionTs <= expiredDeleteTs
+
+    fun expiredDeleteTimes(cutoff: Long, rows: List<Op> = readAll()): Map<String, Long> =
+        rows.asSequence().filter { (it.opType == OP_DELETE || it.entry?.deleted == true) && it.syncId.isNotBlank() && it.ts <= cutoff }
+            .groupBy { it.syncId }.mapValues { (_, ops) -> ops.maxOf { it.ts } }
+
+    fun isPurgedPayload(op: Op, cutoff: Long = System.currentTimeMillis() - ClipboardPurge.DEFAULT_RETENTION_MS): Boolean {
+        if (op.group != null) return false
+        val payload = op.entry ?: return true
+        if (payload.text.isNotEmpty() || payload.imagePath != null || payload.imageData != null) return false
+        return shouldRedactRevision(op.ts, expiredDeleteTimes(cutoff)[op.syncId])
+    }
+
+    fun expiredImagePaths(cutoff: Long): Set<String> = synchronized(monitor) {
+        val expired = expiredDeleteTimes(cutoff, loaded())
+        loaded().asSequence().filter { shouldRedactRevision(it.ts, expired[it.syncId]) }
+            .mapNotNull { it.entry?.imagePath }.toSet()
+    }
+
+    /** Paths still referenced after applying the retention policy conceptually. */
+    fun imagePaths(cutoff: Long): Set<String> = synchronized(monitor) {
+        val expired = expiredDeleteTimes(cutoff, loaded())
+        loaded().asSequence().filterNot { shouldRedactRevision(it.ts, expired[it.syncId]) }
+            .mapNotNull { it.entry?.imagePath }.toSet()
+    }
+
+    fun purgeExpiredDeleted(cutoff: Long): Int = synchronized(monitor) {
+        val rows = loaded()
+        val expired = expiredDeleteTimes(cutoff, rows)
+        if (expired.isEmpty()) return@synchronized 0
+        var changed = 0
+        val rewritten = rows.map { op ->
+            if (op.entry == null || !shouldRedactRevision(op.ts, expired[op.syncId])) return@map op
+            val entry = op.entry
+            if (entry.text.isEmpty() && entry.imagePath == null && entry.imageData == null) return@map op
+            changed++
+            op.copy(entry = entry.copy(text = "", imagePath = null, imageData = null))
+        }
+        if (changed == 0) return@synchronized 0
+        val temporary = rewriteFile
+        try {
+            RandomAccessFile(temporary, "rw").use { file ->
+                file.setLength(0)
+                rewritten.forEach { file.write((json.encodeToString(it) + "\n").toByteArray(Charsets.UTF_8)) }
+                file.fd.sync()
+            }
+            check(temporary.renameTo(oplogFile)) { "无法替换剪切板操作日志" }
+            clearLoadedState()
+            changed
+        } finally {
+            temporary.delete()
+        }
     }
 }

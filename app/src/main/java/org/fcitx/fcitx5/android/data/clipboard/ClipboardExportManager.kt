@@ -104,7 +104,7 @@ object ClipboardExportManager {
             tmp.delete()
         }
     }.getOrElse {
-        Timber.w(it, "Failed to parse clipboard db from zip")
+        Timber.w("Failed to parse clipboard db from zip (%s)", it.javaClass.simpleName)
         null
     }
 
@@ -152,7 +152,7 @@ object ClipboardExportManager {
             out
         }
     }.getOrElse {
-        Timber.w(it, "clipboard_group table absent or unreadable, importing entries only")
+        Timber.w("clipboard_group table absent or unreadable, importing entries only (%s)", it.javaClass.simpleName)
         emptyList()
     }
 
@@ -168,7 +168,7 @@ object ClipboardExportManager {
             db.close()
         }
     }.getOrElse {
-        Timber.w(it, "Failed to count clipboard entries in db")
+        Timber.w("Failed to count clipboard entries in db (%s)", it.javaClass.simpleName)
         0
     }
 }

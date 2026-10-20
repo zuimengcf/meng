@@ -274,6 +274,7 @@ class ClipboardManageActivity : AppCompatActivity() {
         }
         action("同步历史与恢复") { showSyncHistory() }
         action("最近同步结果") { showLatestSyncResult() }
+        action("剪切板操作日志") { showOperationLog() }
         action("变动通知设置") {
             if (android.os.Build.VERSION.SDK_INT >= 33 && androidx.core.content.ContextCompat.checkSelfPermission(this,
                     android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -296,6 +297,42 @@ class ClipboardManageActivity : AppCompatActivity() {
         roomDialogMode = roomMode()
         dialog.setOnDismissListener { if (roomDialog === dialog) { roomDialog = null; roomDialogStatus = null } }
         dialog.show()
+    }
+
+    private fun showOperationLog() {
+        scope.launch {
+            val rows = withContext(Dispatchers.IO) {
+                org.fcitx.fcitx5.android.data.clipboard.ClipboardAuditLog.recent()
+            }
+            val format = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
+            val message = buildString {
+                append("仅记录动作、时间和数量，不记录正文、图片、分组名或房间凭据。日志保留 30 天，最多 1000 条。\n\n")
+                append("删除内容默认可恢复 7 天；到期清除正文与图片，仅留同步删除标记。应用运行时每小时检查，关闭后下次启动补清理。\n\n")
+                if (rows.isEmpty()) append("暂无操作记录（升级前操作不追溯）")
+                rows.forEach { row ->
+                    append(format.format(java.util.Date(row.timestamp))).append("  ")
+                    append(org.fcitx.fcitx5.android.data.clipboard.ClipboardAuditPolicy.label(row.action))
+                    append(" × ").append(row.count).append('\n')
+                }
+            }
+            val text = TextView(this@ClipboardManageActivity).apply {
+                this.text = message
+                setTextIsSelectable(true)
+                setPadding(dp(20), dp(12), dp(20), dp(12))
+            }
+            AlertDialog.Builder(this@ClipboardManageActivity).setTitle("剪切板操作日志")
+                .setView(ScrollView(this@ClipboardManageActivity).apply { addView(text) })
+                .setPositiveButton("关闭", null)
+                .setNeutralButton("清空日志") { _, _ ->
+                    AlertDialog.Builder(this@ClipboardManageActivity).setTitle("清空操作日志？")
+                        .setMessage("仅清空此设备的操作记录，不删除剪切板内容，不影响同步。")
+                        .setNegativeButton("取消", null).setPositiveButton("清空") { _, _ ->
+                            scope.launch { withContext(Dispatchers.IO) {
+                                org.fcitx.fcitx5.android.data.clipboard.ClipboardAuditLog.clear()
+                            }; toast("操作日志已清空") }
+                        }.show()
+                }.show()
+        }
     }
 
     private fun confirmLeaveRoom(host: Boolean) {

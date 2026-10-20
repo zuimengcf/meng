@@ -149,9 +149,13 @@ interface ClipboardDao {
     @Query("SELECT * FROM ${ClipboardEntry.TABLE_NAME} WHERE deleted=1 AND syncId<>''")
     suspend fun getDeletedTombstones(): List<ClipboardEntry>
 
-    /** 批量物理删除指定条目（墓碑按设备确认后清理用）。 */
-    @Query("DELETE FROM ${ClipboardEntry.TABLE_NAME} WHERE id IN (:ids)")
-    suspend fun deleteByIds(ids: List<Int>)
+    /** Deleted rows older than the retention window; their sync tombstone is retained in oplog. */
+    @Query("SELECT * FROM ${ClipboardEntry.TABLE_NAME} WHERE deleted=1 AND updatedAt<=:cutoff")
+    suspend fun findDeletedBefore(cutoff: Long): List<ClipboardEntry>
+
+    /** 保留墓碑行及其同步元数据，只剥离已过期删除内容。 */
+    @Query("UPDATE ${ClipboardEntry.TABLE_NAME} SET text='', imagePath=NULL, pinned=0 WHERE id IN (:ids) AND deleted=1")
+    suspend fun redactDeletedContent(ids: List<Int>)
 
     /* ===== 搜索（额外配置，快速寻找） ===== */
 

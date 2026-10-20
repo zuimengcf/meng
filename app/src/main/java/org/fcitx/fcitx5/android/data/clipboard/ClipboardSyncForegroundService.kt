@@ -29,7 +29,7 @@ class ClipboardSyncForegroundService : Service() {
     private val resultListener: (ClipboardSyncResult) -> Unit = { result ->
         if (result.hasVisibleChanges) notifyHandler.post {
             runCatching { notificationManager.notify(RESULT_NOTIFY_ID, buildResultNotification(result)) }
-                .onFailure { Timber.w(it, "clipboard result notification unavailable; result retained in app") }
+                .onFailure { Timber.w("clipboard result notification unavailable; result retained in app (%s)", it.javaClass.simpleName) }
         }
     }
     override fun onBind(intent: Intent?): IBinder? = null

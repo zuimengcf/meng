@@ -75,10 +75,20 @@ class FcitxDataProvider : DocumentsProvider() {
     private val File.docId
         get() = absolutePath.removePrefix(docIdPrefix)
 
-    private fun fileFromDocId(docId: String) = File(docIdPrefix, docId)
+    /** Resolve a document id without allowing `..`, absolute paths, or symlinks out of the root. */
+    @Throws(FileNotFoundException::class)
+    private fun fileFromDocId(docId: String): File {
+        return DocumentPathPolicy.resolve(baseDir, File(docIdPrefix), docId)
+    }
+
+    private fun File.isWithin(root: File): Boolean {
+        val rootPath = root.canonicalPath
+        val path = canonicalPath
+        return path == rootPath || path.startsWith(rootPath + File.separator)
+    }
 
     override fun onCreate(): Boolean {
-        baseDir = context!!.getExternalFilesDir(null) ?: return false
+        baseDir = (context!!.getExternalFilesDir(null) ?: return false).canonicalFile
         docIdPrefix = "${baseDir.parent}${File.separator}"
         textFilePaths = Array(TEXT_FILES.size) { baseDir.resolve(TEXT_FILES[it]).absolutePath }
         return true
@@ -161,6 +171,8 @@ class FcitxDataProvider : DocumentsProvider() {
     @Throws(FileNotFoundException::class)
     override fun deleteDocument(documentId: String) {
         fileFromDocId(documentId).apply {
+            if (canonicalFile == baseDir) throw FileNotFoundException("Cannot delete provider root")
+            DocumentPathPolicy.validateTree(baseDir, this)
             val ok = if (isDirectory) {
                 deleteRecursively()
             } else {
@@ -177,13 +189,20 @@ class FcitxDataProvider : DocumentsProvider() {
     }
 
     override fun isChildDocument(parentDocumentId: String, documentId: String): Boolean {
-        return documentId.startsWith(parentDocumentId)
+        return try {
+            val parent = fileFromDocId(parentDocumentId).canonicalFile
+            val child = fileFromDocId(documentId).canonicalFile
+            child != parent && child.isWithin(parent)
+        } catch (_: FileNotFoundException) {
+            false
+        }
     }
 
     @Throws(FileNotFoundException::class)
     override fun copyDocument(sourceDocumentId: String, targetParentDocumentId: String): String {
         val oldFile = fileFromDocId(sourceDocumentId)
         val newFile = createAbstractFile(targetParentDocumentId, oldFile.name)
+        DocumentPathPolicy.validateTree(baseDir, oldFile)
         oldFile.apply {
             try {
                 val ok = if (isDirectory) {
@@ -204,11 +223,15 @@ class FcitxDataProvider : DocumentsProvider() {
     @Throws(FileNotFoundException::class)
     override fun renameDocument(documentId: String, displayName: String): String {
         val oldFile = fileFromDocId(documentId)
+        if (oldFile.canonicalFile == baseDir) throw FileNotFoundException("Cannot rename provider root")
+        requireSafeName(displayName)
         val newFile = oldFile.resolveSibling(displayName)
-        if (newFile.exists()) {
-            throw FileNotFoundException("renameDocument id=$documentId to $displayName failed: target exists")
+        if (newFile.exists() || !newFile.canonicalFile.isWithin(baseDir)) {
+            throw FileNotFoundException("renameDocument id=$documentId to $displayName failed: invalid target")
         }
-        oldFile.renameTo(newFile)
+        if (!oldFile.renameTo(newFile)) {
+            throw FileNotFoundException("renameDocument id=$documentId to $displayName failed")
+        }
         return newFile.docId
     }
 
@@ -220,7 +243,10 @@ class FcitxDataProvider : DocumentsProvider() {
     ): String {
         val oldFile = fileFromDocId(sourceDocumentId)
         val newFile = createAbstractFile(targetParentDocumentId, oldFile.name)
-        oldFile.renameTo(newFile)
+        if (oldFile.canonicalFile == baseDir) throw FileNotFoundException("Cannot move provider root")
+        if (!oldFile.renameTo(newFile)) {
+            throw FileNotFoundException("moveDocument id=$sourceDocumentId failed")
+        }
         return newFile.docId
     }
 
@@ -231,7 +257,10 @@ class FcitxDataProvider : DocumentsProvider() {
         projection: Array<String>?
     ) = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION).apply {
         val q = query.lowercase()
-        fileFromDocId(rootId).walk()
+        fileFromDocId(rootId).walkTopDown().onEnter {
+            runCatching { DocumentPathPolicy.validate(baseDir, it) }.isSuccess
+        }
+            .filter { runCatching { DocumentPathPolicy.validate(baseDir, it) }.isSuccess }
             .filter { it.name.lowercase().contains(q) }
             .take(SEARCH_RESULTS_LIMIT)
             .forEach { newRowFromFile(it) }
@@ -246,19 +275,32 @@ class FcitxDataProvider : DocumentsProvider() {
         }
 
     private fun createAbstractFile(parentDocumentId: String, displayName: String): File {
+        requireSafeName(displayName)
         val parent = fileFromDocId(parentDocumentId)
+        if (!parent.isDirectory || !parent.canonicalFile.isWithin(baseDir)) {
+            throw FileNotFoundException("Invalid parent document: $parentDocumentId")
+        }
         var newFile = parent.resolve(displayName)
         var noConflictId = 2
         while (newFile.exists()) {
             newFile = parent.resolve("$displayName ($noConflictId)")
             noConflictId += 1
         }
+        if (!newFile.canonicalFile.isWithin(baseDir)) {
+            throw FileNotFoundException("Invalid document name: $displayName")
+        }
         return newFile
+    }
+
+    private fun requireSafeName(name: String) {
+        if (name.isEmpty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')) {
+            throw FileNotFoundException("Invalid document name")
+        }
     }
 
     @Throws(FileNotFoundException::class)
     private fun MatrixCursor.newRowFromFile(file: File) {
-        if (!file.exists()) {
+        if (!file.exists() || !file.canonicalFile.isWithin(baseDir)) {
             throw FileNotFoundException("File(path=${file.absolutePath}) not found")
         }
 

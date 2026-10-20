@@ -24,6 +24,7 @@ object ClipboardSyncSettings {
     private const val SESSION = "session"
     private const val DEFAULT_PASSWORD = "default_password"
     private const val HOST_PASSWORD_PREFIX = "host_password:"
+    private const val MCP_TOKEN = "mcp_token"
     private const val SEPARATOR = "\u001f"
     private val keyLock = Any()
     data class Session(val mode: String, val host: String, val port: Int, val password: String)
@@ -126,4 +127,12 @@ object ClipboardSyncSettings {
     }
     /** 退出只清理当前运行模式，保留默认密码和按主机记忆密码。 */
     fun clearMode() { check(prefs().edit().remove(SESSION).commit()) { "无法清理同步会话" } }
+
+    /** MCP control is disabled unless a separate token is explicitly configured. */
+    fun saveMcpToken(token: String) {
+        require(token.length >= 16) { "MCP 令牌至少需要 16 个字符" }
+        check(putEncrypted(MCP_TOKEN, token)) { "无法保存 MCP 令牌" }
+    }
+    fun getMcpToken(): String? = readEncrypted(MCP_TOKEN)?.takeIf { it.length >= 16 }
+    fun clearMcpToken() { check(prefs().edit().remove(MCP_TOKEN).commit()) { "无法清理 MCP 令牌" } }
 }

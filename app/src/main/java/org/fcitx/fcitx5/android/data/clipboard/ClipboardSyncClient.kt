@@ -84,14 +84,14 @@ object ClipboardSyncClient {
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
                         lastSyncError = e.message ?: "内容同步失败"
-                        Timber.w(e, "clipboard content merge incomplete")
+                        Timber.w("clipboard content merge incomplete (%s)", e.javaClass.simpleName)
                         delay(5_000L)
                     }
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
                 lastPingOk = 0L; onlineDeviceIds = emptySet(); lastSyncError = e.message ?: "同步连接失败"
-                Timber.w(e, "clipboard sync heartbeat failed")
+                Timber.w("clipboard sync heartbeat failed (%s)", e.javaClass.simpleName)
                 if (wasConnected) onDisconnected?.invoke(); wasConnected = false
                 delay(backoff); backoff = (backoff * 2).coerceAtMost(15_000L); continue
             }
@@ -157,7 +157,11 @@ object ClipboardSyncClient {
         val conn = (uri.toURL().openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = CONNECT_TIMEOUT_MS; readTimeout = READ_TIMEOUT_MS; doOutput = true
             instanceFollowRedirects = false
-            setRequestProperty("Content-Type", "application/json"); setFixedLengthStreamingMode(body.size)
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("X-Clipboard-Sync-Request", id)
+            setRequestProperty("X-Clipboard-Sync-Issued-At", envelope.issuedAt.toString())
+            setRequestProperty("X-Clipboard-Sync-Proof", ClipboardSyncCrypto.requestProof(password, id, issuedAt = envelope.issuedAt))
+            setFixedLengthStreamingMode(body.size)
         }
         try {
             conn.outputStream.use { it.write(body) }
