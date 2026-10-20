@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 package org.fcitx.fcitx5.android.data.clipboard.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Insert
@@ -12,6 +13,7 @@ import androidx.room.Query
 data class ClipboardJournalOutbox(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val payload: String,
+    @ColumnInfo(defaultValue = "'append'") val action: String = "append",
 )
 
 @Dao

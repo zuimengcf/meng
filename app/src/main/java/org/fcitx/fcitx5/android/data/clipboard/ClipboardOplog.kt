@@ -78,6 +78,7 @@ object ClipboardOplog {
         val baselineIds = HashSet<String>()
         val deleteIds = HashSet<String>()
         var maxSeq = maxLocalSeq
+        val deletions = ArrayList<Deletion>()
 
         fun add(op: Op) {
             known[revisionId(op)] = op
@@ -99,11 +100,61 @@ object ClipboardOplog {
         val batches = outbox.pending()
         if (batches.isNotEmpty()) synchronized(monitor) { recoverInterruptedTail() }
         batches.forEach { batch ->
-            val ops = json.decodeFromString<List<Op>>(batch.payload)
-            publish(ops)
+            when (batch.action) {
+                "append" -> publish(json.decodeFromString<List<Op>>(batch.payload))
+                "delete" -> applyDeletion(database, json.decodeFromString<Deletion>(batch.payload))
+                else -> error("未知历史恢复操作，已停止同步")
+            }
             // Crash after fsync but before acknowledgment is safe: revision IDs deduplicate replay.
             outbox.acknowledge(batch.id)
         }
+    }
+
+    /** Contains no text/image bytes; committed in the same transaction as the row deletion. */
+    @Serializable data class Deletion(val syncId: String, val through: Long, val hard: Boolean,
+        val imagePaths: List<String> = emptyList())
+
+    internal fun stageDeletion(deletion: Deletion) {
+        checkNotNull(staged.get()) { "删除必须在历史事务内登记" }.deletions += deletion
+    }
+
+    /** Pure rewrite rule, also tested without Android. Hard local deletion leaves no journal identity. */
+    internal fun deletionRewrite(rows: List<Op>, deletion: Deletion): List<Op> = rows.mapNotNull { op ->
+        when {
+            op.syncId != deletion.syncId -> op
+            deletion.hard -> null
+            op.ts <= deletion.through && op.entry != null -> op.copy(entry = op.entry.copy(
+                text = "", imagePath = null, imageData = null, pinned = false))
+            else -> op
+        }
+    }
+
+    private suspend fun applyDeletion(database: ClipboardDatabase, deletion: Deletion) {
+        synchronized(monitor) {
+            val rows = loaded()
+            val rewritten = deletionRewrite(rows, deletion)
+            if (rows != rewritten) rewriteLocked(rewritten)
+        }
+        // Shared content-addressed images must survive if another live entry/revision still uses them.
+        val references = database.clipboardDao().getAllIncludingDeleted().mapNotNull { it.imagePath }.toSet() +
+            readAll().mapNotNull { it.entry?.imagePath }.toSet()
+        deletion.imagePaths.filter { it !in references && ClipboardPurge.isPrivateClipboardImage(it) }.forEach { path ->
+            val file = File(path)
+            check(!file.exists() || file.delete()) { "图片清理未完成，将在下次操作重试" }
+        }
+        ClipboardSyncSignal.changed()
+    }
+
+    private fun rewriteLocked(rewritten: List<Op>) {
+        try {
+            RandomAccessFile(rewriteFile, "rw").use { file ->
+                file.setLength(0)
+                rewritten.forEach { file.write((json.encodeToString(it) + "\n").toByteArray(Charsets.UTF_8)) }
+                file.fd.sync()
+            }
+            check(rewriteFile.renameTo(oplogFile)) { "无法替换剪贴板操作日志" }
+            clearLoadedState()
+        } finally { rewriteFile.delete() }
     }
 
     /** Rows and their recovery journal either commit together or roll back together.
@@ -121,6 +172,8 @@ object ClipboardOplog {
                 val value = block()
                 if (journal.pending.isNotEmpty()) database.journalOutboxDao().insert(
                     ClipboardJournalOutbox(payload = json.encodeToString(journal.pending.toList())))
+                journal.deletions.forEach { deletion -> database.journalOutboxDao().insert(
+                    ClipboardJournalOutbox(payload = json.encodeToString(deletion), action = "delete")) }
                 value
             }
         }
@@ -307,7 +360,8 @@ object ClipboardOplog {
         if (op.group != null) return false
         val payload = op.entry ?: return true
         if (payload.text.isNotEmpty() || payload.imagePath != null || payload.imageData != null) return false
-        return shouldRedactRevision(op.ts, expiredDeleteTimes(cutoff)[op.syncId])
+        // Immediate deletion is irreversible even before the legacy retention window expires.
+        return shouldRedactRevision(op.ts, expiredDeleteTimes(Long.MAX_VALUE)[op.syncId])
     }
 
     fun expiredImagePaths(cutoff: Long): Set<String> = synchronized(monitor) {

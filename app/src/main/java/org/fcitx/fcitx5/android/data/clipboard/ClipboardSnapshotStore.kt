@@ -46,7 +46,7 @@ object ClipboardSnapshotStore {
         }
         ClipboardManager.syncGroupDao().getAllIncludingAll().sortedBy { it.syncId }.forEach { add(it.toString()) }
         ClipboardManager.syncDao().getAllIncludingDeleted().sortedBy { it.syncId }.forEach { e ->
-            add(e.toString()); val f = e.imagePath?.let(::File)
+            add(e.copy(hasBeenSynced = true, syncExposurePending = false).toString()); val f = e.imagePath?.let(::File)
             add("${f?.isFile}:${f?.length()}:${f?.lastModified()}")
         }
         ClipboardOplog.readAll().sortedBy { ClipboardOplog.revisionId(it) }.forEach { add(ClipboardOplog.revisionId(it)) }
@@ -109,13 +109,23 @@ object ClipboardSnapshotStore {
         var changed = 0
         ClipboardOplog.withTransaction(ClipboardManager.syncDatabase()) {
             val gd = ClipboardManager.syncGroupDao(); val ed = ClipboardManager.syncDao()
-            val retentionCutoff = System.currentTimeMillis() - ClipboardPurge.DEFAULT_RETENTION_MS
-            val dbExpiredDeletes = ed.findDeletedBefore(retentionCutoff)
-                .filter { it.syncId.isNotBlank() }
-                .associate { it.syncId to it.updatedAt }
-            val expiredDeletes = (ClipboardOplog.expiredDeleteTimes(retentionCutoff).entries + dbExpiredDeletes.entries)
-                .groupBy { it.key }
-                .mapValues { (_, values) -> values.maxOf { it.value } }
+            // Every local tombstone is a redaction barrier, not only rows past retention.
+            // Also include tombstones in this packet before filtering its history, so an
+            // old revision cannot ride alongside a freshly received delete.
+            val tombstones = mutableMapOf<String, Long>()
+            ed.getAllIncludingDeleted().filter { it.deleted && it.syncId.isNotBlank() }
+                .forEach { tombstones[it.syncId] = maxOf(tombstones[it.syncId] ?: 0L, it.updatedAt) }
+            ClipboardOplog.readAll().filter { it.entry?.deleted == true && it.syncId.isNotBlank() }
+                .forEach { tombstones[it.syncId] = maxOf(tombstones[it.syncId] ?: 0L, it.ts) }
+            packet.entries.filter { it.deleted }.forEach {
+                tombstones[it.syncId] = maxOf(tombstones[it.syncId] ?: 0L, it.updatedAt)
+            }
+            packet.history.filter { it.entry?.deleted == true }.forEach {
+                tombstones[it.syncId] = maxOf(tombstones[it.syncId] ?: 0L, it.ts)
+            }
+            val remoteIds = (packet.entries.map { it.syncId } + packet.history.filter { it.entry != null }.map { it.syncId }).toSet()
+            val historicalImagePaths = ClipboardOplog.readAll().groupBy { it.syncId }
+                .mapValues { (_, ops) -> ops.mapNotNull { it.entry?.imagePath }.toSet() }
             // One durable clock advance per packet, not one blocking preference commit per row.
             val remoteMax = maxOf(packet.entries.maxOfOrNull { it.updatedAt } ?: 0L,
                 packet.groups.maxOfOrNull { it.updatedAt } ?: 0L, packet.history.maxOfOrNull { it.ts } ?: 0L)
@@ -124,9 +134,9 @@ object ClipboardSnapshotStore {
             // File publication follows the Room commit and is retried before the next sync.
             val journal = mutableListOf<ClipboardOplog.Op>()
             packet.history.forEach { h ->
-                val deleteTs = expiredDeletes[h.syncId]
+                val deleteTs = tombstones[h.syncId]
                 val entry = h.entry?.let { p ->
-                    if (deleteTs != null && h.ts <= deleteTs) p.copy(text = "", imagePath = null, imageData = null) else p
+                    if (deleteTs != null && h.ts <= deleteTs) p.copy(text = "", pinned = false, imagePath = null, imageData = null) else p
                 }
                 val seq = h.id.substringAfterLast(':').toLongOrNull() ?: error("无效历史版本标识")
                 require(seq >= 0 && h.id == "${h.deviceId}:$seq") { "历史版本标识不匹配" }
@@ -145,12 +155,13 @@ object ClipboardSnapshotStore {
                 }
             }
             packet.entries.sortedBy { it.syncId }.forEach { r ->
-                val deleteTs = expiredDeletes[r.syncId]
-                if (deleteTs != null && r.updatedAt <= deleteTs) return@forEach
+                val deleteTs = tombstones[r.syncId]
+                if (!r.deleted && deleteTs != null && r.updatedAt <= deleteTs) return@forEach
                 val local = ed.getBySyncId(r.syncId)
                 val localGroup = local?.let { gd.get(it.groupId) }
                 val localWire = local?.let { toSync(it, localGroup) }
-                journal += archiveOp(r); localWire?.let { journal += archiveOp(it) }
+                val journalR = if (r.deleted) r.copy(text = "", pinned = false, imageData = null) else r
+                journal += archiveOp(journalR); localWire?.let { journal += archiveOp(it) }
                 val cmp = if (localWire == null) 1 else compare(r.updatedAt, r.deviceId, semantic(r),
                     localWire.updatedAt, localWire.deviceId, semantic(localWire))
                 val repair = local != null && ClipboardSyncRules.canRepairMissingImage(cmp, r.deleted,
@@ -163,16 +174,26 @@ object ClipboardSnapshotStore {
                     return@forEach
                 }
                 val group = r.groupSyncId.takeIf { it.isNotBlank() }?.let { gd.getBySyncId(it) }
-                val path = if (!r.deleted && r.type.startsWith("image/")) {
+                val path = if (r.deleted) null else if (r.type.startsWith("image/")) {
                     if (!r.imageData.isNullOrBlank()) imageBase64ToFile(r.imageData, r.type) ?: error("图片写入失败，未确认同步完成")
                     else local?.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
                 } else local?.imagePath // Keep source for explicit undo/history; never send deleted image bytes.
-                ed.upsert(ClipboardEntry(id = local?.id ?: 0, text = r.text, pinned = r.pinned, timestamp = r.timestamp,
+                if (r.deleted) {
+                    ClipboardOplog.stageDeletion(ClipboardOplog.Deletion(
+                        r.syncId, r.updatedAt, hard = false,
+                        imagePaths = (listOfNotNull(local?.imagePath) + historicalImagePaths[r.syncId].orEmpty()).distinct()))
+                }
+                ed.upsert(ClipboardEntry(id = local?.id ?: 0, text = if (r.deleted) "" else r.text,
+                    pinned = if (r.deleted) false else r.pinned, timestamp = r.timestamp,
                     type = r.type, deleted = r.deleted, sensitive = r.sensitive, imagePath = path,
                     groupId = group?.takeUnless { it.deleted }?.id ?: 0, groupSyncId = r.groupSyncId,
-                    syncId = r.syncId, updatedAt = r.updatedAt, sortOrder = r.sortOrder, lastModifiedBy = r.deviceId))
+                    syncId = r.syncId, updatedAt = r.updatedAt, sortOrder = r.sortOrder, lastModifiedBy = r.deviceId,
+                    hasBeenSynced = r.syncId in remoteIds))
                 changed++
             }
+            // A received historical revision proves the identity exists on the peer too,
+            // even if the delta did not repeat its current row or our newer row won.
+            remoteIds.forEach { ed.markDelivered(it) }
             // Visible group linkage is derived from stable identity. A tombstone cannot hide entries forever.
             val groupsBySyncId = gd.getAllIncludingAll().associateBy { it.syncId }
             ed.getAllIncludingDeleted().forEach { entry ->

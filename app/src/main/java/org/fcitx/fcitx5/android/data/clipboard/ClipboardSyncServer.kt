@@ -166,18 +166,30 @@ object ClipboardSyncServer {
             return ClipboardSyncWireResponse(true, requestId, "mcp", packetJson = McpServer.handle(req.packetJson ?: ""))
         }
         if (req.kind == "heartbeat") return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId)
+        if (req.kind == "ack") {
+            require(req.clientId != ClipboardOplog.deviceId) { "不能接受本机送达回执" }
+            return ClipboardDelivery.withLock {
+                ClipboardDelivery.confirm(req.receivedEntryIds)
+                ClipboardSyncWireResponse(true, requestId, "ack")
+            }
+        }
         if (req.kind != "sync" || req.packetJson.isNullOrBlank()) throw IllegalArgumentException("invalid sync request")
         val packet = json.decodeFromString<ClipboardSyncPacket>(req.packetJson)
         require(packet.protocolVersion == ClipboardSyncCrypto.PROTOCOL_VERSION && packet.deviceId == req.clientId && packet.deviceId.isNotBlank()) { "packet identity or version invalid" }
-        val (applied, stats) = ClipboardSnapshotStore.mergeWithStats(packet)
-        ClipboardSyncNotifications.record(stats)
-        if (applied > 0) onClientSynced(applied)
-        val captured = ClipboardSnapshotStore.capture()
-        val inventory = ClipboardSyncDelta.inventory(captured.packet)
-        val outgoing = ClipboardSyncDelta.difference(captured.packet, req.inventory, inventory)
-        return ClipboardSyncWireResponse(true, requestId, "sync", captured.fingerprint, json.encodeToString(outgoing),
-            onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
-            inventory = if (req.inventory != null) inventory else null)
+        require(packet.deviceId != ClipboardOplog.deviceId) { "不能将同步到本机当作另一台设备接收" }
+        return ClipboardDelivery.withLock {
+            val (applied, stats) = ClipboardSnapshotStore.mergeWithStats(packet)
+            ClipboardSyncNotifications.record(stats)
+            if (applied > 0) onClientSynced(applied)
+            val captured = ClipboardSnapshotStore.capture()
+            val inventory = ClipboardSyncDelta.inventory(captured.packet)
+            val outgoing = ClipboardSyncDelta.difference(captured.packet, req.inventory, inventory)
+            ClipboardDelivery.beginExposure(outgoing)
+            ClipboardSyncWireResponse(true, requestId, "sync", captured.fingerprint, json.encodeToString(outgoing),
+                onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
+                inventory = if (req.inventory != null) inventory else null,
+                receivedEntryIds = ClipboardDelivery.ids(packet).toList())
+        }
     }
 
     private fun setRemainingTimeout(socket: Socket, deadline: Long) {

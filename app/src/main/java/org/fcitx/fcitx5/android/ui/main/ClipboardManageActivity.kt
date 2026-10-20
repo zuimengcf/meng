@@ -548,8 +548,6 @@ class ClipboardManageActivity : AppCompatActivity() {
         }
     }
 
-    private val pendingDeleteIds = arrayListOf<Int>()
-
     private fun sortName(mode: Int): String = when (mode) {
         1 -> "置顶优先"
         2 -> "自定义排序（拖拽）"
@@ -589,7 +587,7 @@ class ClipboardManageActivity : AppCompatActivity() {
         }
     }
 
-    /** 删除确认弹窗，确认后标记删除并提供撤销。 */
+    /** 删除确认弹窗；用户确认后立即且不可恢复地删除。 */
     private fun confirmDelete(entry: ClipboardEntry) {
         AlertDialog.Builder(this)
             .setTitle(R.string.delete)
@@ -597,8 +595,7 @@ class ClipboardManageActivity : AppCompatActivity() {
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 scope.launch {
                     withContext(Dispatchers.IO) { ClipboardManager.delete(entry.id) }
-                    pendingDeleteIds.add(entry.id)
-                    showUndoSnackbar(entry.id)
+                    showDeletedSnackbar()
                     loadEntries()
                 }
             }
@@ -606,38 +603,9 @@ class ClipboardManageActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 弹出撤销删除 Snackbar；超时或滑动即真正删除。 */
-    private fun showUndoSnackbar(vararg id: Int) {
-        id.forEach { if (!pendingDeleteIds.contains(it)) pendingDeleteIds.add(it) }
-        val root = binding.root
-        Snackbar.make(root, getString(R.string.clipboard_delete_undo_hint), Snackbar.LENGTH_LONG)
-            .setAction(R.string.undo) {
-                scope.launch {
-                    withContext(Dispatchers.IO) {
-                        ClipboardManager.undoDelete(*pendingDeleteIds.toIntArray())
-                    }
-                    pendingDeleteIds.clear()
-                    loadEntries()
-                }
-            }
-            .addCallback(object : Snackbar.Callback() {
-                override fun onDismissed(transientBottomBar: Snackbar, event: Int) {
-                    when (event) {
-                        Snackbar.Callback.DISMISS_EVENT_SWIPE,
-                        Snackbar.Callback.DISMISS_EVENT_MANUAL,
-                        Snackbar.Callback.DISMISS_EVENT_TIMEOUT -> {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { ClipboardManager.realDelete() }
-                                pendingDeleteIds.clear()
-                            }
-                        }
-                        Snackbar.Callback.DISMISS_EVENT_ACTION,
-                        Snackbar.Callback.DISMISS_EVENT_CONSECUTIVE -> {
-                            // user clicked "undo" or deleted more items which makes a new snackbar
-                        }
-                    }
-                }
-            }).show()
+    /** 立即删除只给出简短反馈，不提供撤销入口。 */
+    private fun showDeletedSnackbar() {
+        Snackbar.make(binding.root, "已删除", Snackbar.LENGTH_SHORT).show()
     }
 
     /** 弹出「移到分组」选择框：未分组 + 全部分组。 */

@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [ClipboardEntry::class, ClipboardGroup::class, ClipboardJournalOutbox::class],
-    version = 11,
+    version = 12,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -30,6 +30,14 @@ abstract class ClipboardDatabase : RoomDatabase() {
 
     companion object {
         const val DB_NAME = "clbdb"
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE clipboard ADD COLUMN hasBeenSynced INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE clipboard ADD COLUMN syncExposurePending INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE clipboard_journal_outbox ADD COLUMN action TEXT NOT NULL DEFAULT 'append'")
+            }
+        }
 
         /** Adds only a recovery queue; no clipboard rows or existing history are removed. */
         val MIGRATION_10_11 = object : Migration(10, 11) {

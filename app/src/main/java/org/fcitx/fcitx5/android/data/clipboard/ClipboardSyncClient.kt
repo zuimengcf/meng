@@ -107,6 +107,7 @@ object ClipboardSyncClient {
     }
 
     suspend fun syncOnce(baseUrl: String = currentRoom, password: String = currentPassword, onProgress: ((String, Int, Int, Int) -> Unit)? = null): Int = requestLock.withLock {
+        ClipboardDelivery.withSendFence { releaseFence ->
         require(password.isNotEmpty()) { "房间密码不能为空" }
         val startGeneration = generation
         try {
@@ -118,13 +119,19 @@ object ClipboardSyncClient {
         val sameRoom = normalizeBaseUrl(baseUrl) == currentRoom && password == currentPassword
         val outgoing = ClipboardSyncDelta.difference(packet, if (sameRoom) peerInventory else null, inventory)
         onProgress?.invoke("交换变更（条目 ${outgoing.entries.size}，分组 ${outgoing.groups.size}，历史 ${outgoing.history.size}）", outgoing.entries.size, 0, 0)
-        val body = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest("sync", ClipboardOplog.deviceId, uploadFingerprint, json.encodeToString(outgoing), inventory))
+        val body = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest("sync", ClipboardOplog.deviceId, uploadFingerprint, json.encodeToString(outgoing), inventory), releaseFence)
         if (startGeneration != generation) throw CancellationException("房间已切换或退出")
         if (!body.ok || body.packetJson == null) throw IllegalStateException(body.error ?: "同步响应无效")
         val incoming = json.decodeFromString<ClipboardSyncPacket>(body.packetJson)
         require(incoming.protocolVersion == ClipboardSyncCrypto.PROTOCOL_VERSION && incoming.deviceId.isNotBlank()) { "同步响应协议或设备标识无效" }
+        require(incoming.deviceId != ClipboardOplog.deviceId) { "不能把本机当作其他同步设备" }
+        ClipboardDelivery.confirm(body.receivedEntryIds.toSet().intersect(ClipboardDelivery.ids(outgoing)))
         lastPingOk = System.currentTimeMillis(); onlineDeviceIds = body.onlineClientIds.toSet()
         val (applied, rawStats) = ClipboardSnapshotStore.mergeWithStats(incoming)
+        runCatching {
+            requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest(
+                "ack", ClipboardOplog.deviceId, receivedEntryIds = ClipboardDelivery.ids(incoming).toList()))
+        }.onFailure { if (it is CancellationException) throw it }
         // A delta does not echo matching rows; count matches from the complete authenticated inventory.
         val stats = rawStats.copy(mergedExisting = body.inventory?.entries?.keys?.count { id -> inventory.entries.containsKey(id) }
             ?: rawStats.mergedExisting)
@@ -145,9 +152,10 @@ object ClipboardSyncClient {
             lastSyncError = e.message ?: "同步失败"
             throw e
         }
+        }
     }
 
-    private suspend fun requestAt(baseUrl: String, password: String, req: ClipboardSyncWireRequest): ClipboardSyncWireResponse = withContext(Dispatchers.IO) {
+    private suspend fun requestAt(baseUrl: String, password: String, req: ClipboardSyncWireRequest, afterExposure: (() -> Unit)? = null): ClipboardSyncWireResponse = withContext(Dispatchers.IO) {
         require(password.isNotEmpty()) { "房间密码不能为空" }; require(req.clientId.isNotBlank()) { "client ID不能为空" }
         val id = ClipboardSyncCrypto.requestId()
         val envelope = ClipboardSyncCrypto.encrypt(password, id, req.clientId, json.encodeToString(req), ClipboardSyncCrypto.REQUEST_DIRECTION)
@@ -164,7 +172,12 @@ object ClipboardSyncClient {
             setFixedLengthStreamingMode(body.size)
         }
         try {
-            conn.outputStream.use { it.write(body) }
+            val output = conn.outputStream
+            if (req.kind == "sync" && !req.packetJson.isNullOrBlank()) {
+                ClipboardDelivery.beginExposure(json.decodeFromString<ClipboardSyncPacket>(req.packetJson))
+            }
+            afterExposure?.invoke()
+            output.use { it.write(body) }
             if (conn.responseCode != 200) throw IllegalStateException("主机返回 HTTP ${conn.responseCode}")
             val responseEnvelope = readBounded(conn.inputStream, MAX_BODY)
             val wire = json.decodeFromString<ClipboardSyncEnvelope>(responseEnvelope)

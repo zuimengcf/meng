@@ -34,6 +34,7 @@ data class ClipboardSyncWireRequest(
     val statusHash: String = "",
     val packetJson: String? = null,
     val inventory: ClipboardSyncInventory? = null,
+    val receivedEntryIds: List<String> = emptyList(),
 )
 
 @Serializable
@@ -46,6 +47,7 @@ data class ClipboardSyncWireResponse(
     val error: String? = null,
     val onlineClientIds: List<String> = emptyList(),
     val inventory: ClipboardSyncInventory? = null,
+    val receivedEntryIds: List<String> = emptyList(),
 )
 
 object ClipboardSyncCrypto {

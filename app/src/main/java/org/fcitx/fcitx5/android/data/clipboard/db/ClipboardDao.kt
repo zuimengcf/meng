@@ -12,6 +12,12 @@ import androidx.room.Query
 
 @Dao
 interface ClipboardDao {
+    @Query("UPDATE clipboard SET syncExposurePending=1 WHERE syncId=:syncId AND hasBeenSynced=0")
+    suspend fun markExposurePending(syncId: String)
+
+    @Query("UPDATE clipboard SET hasBeenSynced=1, syncExposurePending=0 WHERE syncId=:syncId")
+    suspend fun markDelivered(syncId: String)
+
     @Insert
     suspend fun insert(clipboardEntry: ClipboardEntry): Long
 

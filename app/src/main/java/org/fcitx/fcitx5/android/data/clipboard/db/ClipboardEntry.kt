@@ -46,6 +46,12 @@ data class ClipboardEntry(
     /** 最后修改该条目的设备 id（多设备同步区分用；空表示本机/未知）。 */
     @ColumnInfo(defaultValue = "")
     val lastModifiedBy: String = "",
+    /** Unknown/legacy/imported rows default to shared; only freshly captured rows opt out. */
+    @ColumnInfo(defaultValue = "1")
+    val hasBeenSynced: Boolean = true,
+    /** Bytes may have reached a peer, but no durable authenticated receipt has arrived. */
+    @ColumnInfo(defaultValue = "0")
+    val syncExposurePending: Boolean = false,
 ) {
     companion object {
         const val BULLET = "•"

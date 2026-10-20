@@ -80,7 +80,8 @@ add_link_options(-Wl,--hash-style=gnu -Wl,--build-id=none -Wl,--no-undefined)
 add_library(rime SHARED
   "$SRC/rimestate.cpp" "$SRC/rimeengine.cpp" "$SRC/rimecandidate.cpp"
   "$SRC/rimesession.cpp" "$SRC/rimeaction.cpp" "$SRC/rimefactory.cpp")
-target_compile_definitions(rime PRIVATE RIME_DATA_DIR="usr/share/rime-data" FCITX_INSTALL_LOCALEDIR=\"/usr/share/locale\" FCITX_RIME_NO_DBUS FCITX_RIME_VERSION=\"5.1.16\")
+# Match upstream: without this, _() queries the default catalog, not fcitx5-rime.
+target_compile_definitions(rime PRIVATE FCITX_GETTEXT_DOMAIN=\"fcitx5-rime\" RIME_DATA_DIR="usr/share/rime-data" FCITX_INSTALL_LOCALEDIR=\"/usr/share/locale\" FCITX_RIME_NO_DBUS FCITX_RIME_VERSION=\"5.1.16\")
 target_compile_options(rime PRIVATE -include sys/types.h)
 target_include_directories(rime PRIVATE "$SRC" "$OUT/generated" "$FCROOT" "$FCROOT/lib" "$FCROOT/modules/notifications" "$RIME_INC")
 # librime is fully included so its API and Lua/plugin registration objects are

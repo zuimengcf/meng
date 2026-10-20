@@ -9,7 +9,6 @@ import android.content.Intent
 
 import android.view.View
 import android.view.ViewGroup
-import android.widget.FrameLayout
 import android.widget.PopupMenu
 import androidx.annotation.Keep
 import androidx.core.text.bold
@@ -22,9 +21,7 @@ import androidx.paging.PagingConfig
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
-import com.google.android.material.snackbar.BaseTransientBottomBar.BaseCallback
 import com.google.android.material.snackbar.Snackbar
-import com.google.android.material.snackbar.SnackbarContentLayout
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.R
@@ -167,7 +164,7 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
             override fun onDelete(id: Int) {
                 service.lifecycleScope.launch {
                     ClipboardManager.delete(id)
-                    showUndoSnackbar(id)
+                    showDeletedSnackbar()
                 }
             }
 
@@ -226,7 +223,7 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                     val entry = adapter.getEntryAt(viewHolder.bindingAdapterPosition) ?: return
                     service.lifecycleScope.launch {
                         ClipboardManager.delete(entry.id)
-                        showUndoSnackbar(entry.id)
+                        showDeletedSnackbar()
                     }
                 }
             }).attachToRecyclerView(recyclerView)
@@ -338,7 +335,7 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
             menu.item(android.R.string.ok) {
                 service.lifecycleScope.launch {
                     val ids = ClipboardManager.deleteAll(skipPinned)
-                    showUndoSnackbar(*ids)
+                    if (ids.isNotEmpty()) showDeletedSnackbar()
                 }
             }
             setOnDismissListener {
@@ -348,41 +345,14 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
         }
     }
 
-    private val pendingDeleteIds = arrayListOf<Int>()
-
     @SuppressLint("RestrictedApi")
-    private fun showUndoSnackbar(vararg id: Int) {
-        id.forEach { pendingDeleteIds.add(it) }
-        val str = context.resources.getString(R.string.num_items_deleted, pendingDeleteIds.size)
-        snackbarInstance = Snackbar.make(snackbarCtx, ui.root, str, Snackbar.LENGTH_LONG)
+    private fun showDeletedSnackbar() {
+        snackbarInstance = Snackbar.make(snackbarCtx, ui.root, "已删除", Snackbar.LENGTH_LONG)
             .setBackgroundTint(theme.popupBackgroundColor)
             .setTextColor(theme.popupTextColor)
-            .setActionTextColor(theme.genericActiveBackgroundColor)
-            .setAction(R.string.undo) {
-                service.lifecycleScope.launch {
-                    ClipboardManager.undoDelete(*pendingDeleteIds.toIntArray())
-                    pendingDeleteIds.clear()
-                }
-            }
             .addCallback(object : Snackbar.Callback() {
                 override fun onDismissed(transientBottomBar: Snackbar, event: Int) {
-                    if (snackbarInstance === transientBottomBar) {
-                        snackbarInstance = null
-                    }
-                    when (event) {
-                        BaseCallback.DISMISS_EVENT_SWIPE,
-                        BaseCallback.DISMISS_EVENT_MANUAL,
-                        BaseCallback.DISMISS_EVENT_TIMEOUT -> {
-                            service.lifecycleScope.launch {
-                                ClipboardManager.realDelete()
-                                pendingDeleteIds.clear()
-                            }
-                        }
-                        BaseCallback.DISMISS_EVENT_ACTION,
-                        BaseCallback.DISMISS_EVENT_CONSECUTIVE -> {
-                            // user clicked "undo" or deleted more items which makes a new snackbar
-                        }
-                    }
+                    if (snackbarInstance === transientBottomBar) snackbarInstance = null
                 }
             }).apply {
                 val hMargin = snackbarCtx.dp(24)
@@ -391,10 +361,6 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                     leftMargin = hMargin
                     rightMargin = hMargin
                     bottomMargin = vMargin
-                }
-                ((view as FrameLayout).getChildAt(0) as SnackbarContentLayout).apply {
-                    messageView.letterSpacing = 0f
-                    actionView.letterSpacing = 0f
                 }
                 show()
             }
