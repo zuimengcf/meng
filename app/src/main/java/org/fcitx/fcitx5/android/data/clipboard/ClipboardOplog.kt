@@ -79,6 +79,19 @@ object ClipboardOplog {
         val deleteIds = HashSet<String>()
         var maxSeq = maxLocalSeq
         val deletions = ArrayList<Deletion>()
+        private var imagePathIndex: MutableMap<String, MutableSet<String>>? = null
+
+        fun imagePathsBySyncId(ids: Set<String>): Map<String, Set<String>> {
+            imagePathIndex?.let { index -> return ids.associateWith { index[it].orEmpty() }.filterValues { it.isNotEmpty() } }
+            val index = HashMap<String, MutableSet<String>>()
+            fun collect(rows: Iterable<Op>) { rows.forEach { op ->
+                op.entry?.imagePath?.let { index.getOrPut(op.syncId) { linkedSetOf() } += it }
+            } }
+            collect(loaded())
+            collect(pending)
+            imagePathIndex = index
+            return ids.associateWith { index[it].orEmpty() }.filterValues { it.isNotEmpty() }
+        }
 
         fun add(op: Op) {
             known[revisionId(op)] = op
@@ -87,6 +100,11 @@ object ClipboardOplog {
             if (op.opType == OP_INSERT || op.opType == OP_GROUP_ADD) baselineIds += op.syncId
             if (op.opType == OP_DELETE || op.opType == OP_GROUP_DELETE) deleteIds += op.syncId
             if (op.deviceId == deviceId) maxSeq = maxOf(maxSeq, op.seq)
+            // Mixed soft/hard deletion batches append recovery revisions between
+            // lookups. Update only this delta instead of invalidating the full index.
+            op.entry?.imagePath?.let { path ->
+                imagePathIndex?.getOrPut(op.syncId) { linkedSetOf() }?.add(path)
+            }
         }
     }
     private val staged = ThreadLocal<Staged?>()
@@ -99,14 +117,30 @@ object ClipboardOplog {
         val outbox = database.journalOutboxDao()
         val batches = outbox.pending()
         if (batches.isNotEmpty()) synchronized(monitor) { recoverInterruptedTail() }
-        batches.forEach { batch ->
-            when (batch.action) {
-                "append" -> publish(json.decodeFromString<List<Op>>(batch.payload))
-                "delete" -> applyDeletion(database, json.decodeFromString<Deletion>(batch.payload))
-                else -> error("未知历史恢复操作，已停止同步")
+        var index = 0
+        while (index < batches.size) {
+            val batch = batches[index]
+            if (batch.action == "delete" || batch.action == "delete_batch") {
+                // Consume only consecutive deletion records. The old single Deletion
+                // payload remains valid, while new transactions use one list payload.
+                val group = ArrayList<ClipboardJournalOutbox>()
+                while (index < batches.size && (batches[index].action == "delete" || batches[index].action == "delete_batch")) {
+                    group += batches[index++]
+                }
+                val deletions = group.flatMap { decodeDeletions(it) }
+                applyDeletions(database, deletions)
+                // Acknowledging happens only after the complete rewrite and reference
+                // cleanup succeed; any failure leaves every record replayable.
+                group.forEach { outbox.acknowledge(it.id) }
+            } else {
+                when (batch.action) {
+                    "append" -> publish(json.decodeFromString<List<Op>>(batch.payload))
+                    else -> error("未知历史恢复操作，已停止同步")
+                }
+                // Crash after fsync but before acknowledgment is safe: revision IDs deduplicate replay.
+                outbox.acknowledge(batch.id)
+                index++
             }
-            // Crash after fsync but before acknowledgment is safe: revision IDs deduplicate replay.
-            outbox.acknowledge(batch.id)
         }
     }
 
@@ -119,26 +153,54 @@ object ClipboardOplog {
     }
 
     /** Pure rewrite rule, also tested without Android. Hard local deletion leaves no journal identity. */
-    internal fun deletionRewrite(rows: List<Op>, deletion: Deletion): List<Op> = rows.mapNotNull { op ->
-        when {
-            op.syncId != deletion.syncId -> op
-            deletion.hard -> null
-            op.ts <= deletion.through && op.entry != null -> op.copy(entry = op.entry.copy(
-                text = "", imagePath = null, imageData = null, pinned = false))
-            else -> op
+    internal fun deletionRewrite(rows: List<Op>, deletion: Deletion): List<Op> = deletionRewrite(rows, listOf(deletion))
+
+    /** Applies a whole deletion batch in one pass. Hard delete wins; soft deletes use
+     * the greatest through timestamp for each syncId. */
+    internal fun deletionRewrite(rows: List<Op>, deletions: List<Deletion>): List<Op> {
+        if (deletions.isEmpty()) return rows
+        val rules = HashMap<String, Deletion>()
+        deletions.forEach { d ->
+            // Blank syncId is the legacy "image cleanup only" marker; it must
+            // never match every blank-id historical row.
+            if (d.syncId.isBlank()) return@forEach
+            val old = rules[d.syncId]
+            if (old == null || d.hard || (!old.hard && d.through > old.through)) rules[d.syncId] = d
         }
+        var changed = false
+        val rewritten = rows.mapNotNull { op ->
+            val d = rules[op.syncId] ?: return@mapNotNull op
+            when {
+                d.hard -> { changed = true; null }
+                op.ts <= d.through && op.entry != null -> {
+                    val entry = op.entry
+                    if (entry.text.isEmpty() && entry.imagePath == null && entry.imageData == null && !entry.pinned) op
+                    else { changed = true; op.copy(entry = entry.copy(text = "", imagePath = null, imageData = null, pinned = false)) }
+                }
+                else -> op
+            }
+        }
+        return if (changed) rewritten else rows
     }
 
-    private suspend fun applyDeletion(database: ClipboardDatabase, deletion: Deletion) {
-        synchronized(monitor) {
+    private fun decodeDeletions(batch: ClipboardJournalOutbox): List<Deletion> = when (batch.action) {
+        "delete" -> listOf(json.decodeFromString<Deletion>(batch.payload))
+        "delete_batch" -> json.decodeFromString<List<Deletion>>(batch.payload)
+        else -> error("不是删除 outbox")
+    }
+
+    private suspend fun applyDeletions(database: ClipboardDatabase, deletions: List<Deletion>) {
+        if (deletions.isEmpty()) return
+        val paths = deletions.flatMap { it.imagePaths }.toSet()
+        val rewritten = synchronized(monitor) {
             val rows = loaded()
-            val rewritten = deletionRewrite(rows, deletion)
-            if (rows != rewritten) rewriteLocked(rewritten)
+            deletionRewrite(rows, deletions).also { if (it !== rows) rewriteLocked(it) }
         }
-        // Shared content-addressed images must survive if another live entry/revision still uses them.
+        // Scan the resulting in-memory journal exactly once; never call readAll/filter
+        // once per deletion. This also includes the pending transaction delta.
         val references = database.clipboardDao().getAllIncludingDeleted().mapNotNull { it.imagePath }.toSet() +
-            readAll().mapNotNull { it.entry?.imagePath }.toSet()
-        deletion.imagePaths.filter { it !in references && ClipboardPurge.isPrivateClipboardImage(it) }.forEach { path ->
+            rewritten.asSequence().mapNotNull { it.entry?.imagePath }.toSet()
+        paths.filter { it !in references && ClipboardPurge.isPrivateClipboardImage(it) }.forEach { path ->
             val file = File(path)
             check(!file.exists() || file.delete()) { "图片清理未完成，将在下次操作重试" }
         }
@@ -172,8 +234,8 @@ object ClipboardOplog {
                 val value = block()
                 if (journal.pending.isNotEmpty()) database.journalOutboxDao().insert(
                     ClipboardJournalOutbox(payload = json.encodeToString(journal.pending.toList())))
-                journal.deletions.forEach { deletion -> database.journalOutboxDao().insert(
-                    ClipboardJournalOutbox(payload = json.encodeToString(deletion), action = "delete")) }
+                if (journal.deletions.isNotEmpty()) database.journalOutboxDao().insert(
+                    ClipboardJournalOutbox(payload = json.encodeToString(journal.deletions.toList()), action = "delete_batch"))
                 value
             }
         }
@@ -359,15 +421,29 @@ object ClipboardOplog {
     fun isPurgedPayload(op: Op, cutoff: Long = System.currentTimeMillis() - ClipboardPurge.DEFAULT_RETENTION_MS): Boolean {
         if (op.group != null) return false
         val payload = op.entry ?: return true
-        if (payload.text.isNotEmpty() || payload.imagePath != null || payload.imageData != null) return false
-        // Immediate deletion is irreversible even before the legacy retention window expires.
-        return shouldRedactRevision(op.ts, expiredDeleteTimes(Long.MAX_VALUE)[op.syncId])
+        // Redacted payloads carry no recoverable body, regardless of retention cutoff.
+        // Keep the parameter for source compatibility with Purge callers.
+        return payload.text.isEmpty() && payload.imagePath == null && payload.imageData == null
     }
 
     fun expiredImagePaths(cutoff: Long): Set<String> = synchronized(monitor) {
         val expired = expiredDeleteTimes(cutoff, loaded())
         loaded().asSequence().filter { shouldRedactRevision(it.ts, expired[it.syncId]) }
             .mapNotNull { it.entry?.imagePath }.toSet()
+    }
+
+    /** Returns image paths for requested syncIds with one journal scan. Includes staged
+     * transaction entries, so callers never need readAll/filter once per entry. */
+    fun imagePathsForSyncId(syncId: String): Set<String> = imagePathsBySyncId(setOf(syncId))[syncId].orEmpty()
+
+    fun imagePathsBySyncId(syncIds: Set<String>): Map<String, Set<String>> = synchronized(monitor) {
+        if (syncIds.isEmpty()) return@synchronized emptyMap()
+        staged.get()?.let { return@synchronized it.imagePathsBySyncId(syncIds) }
+        val result = HashMap<String, MutableSet<String>>()
+        loaded().forEach { op ->
+            if (op.syncId in syncIds) op.entry?.imagePath?.let { result.getOrPut(op.syncId) { linkedSetOf() } += it }
+        }
+        result
     }
 
     /** Paths still referenced after applying the retention policy conceptually. */

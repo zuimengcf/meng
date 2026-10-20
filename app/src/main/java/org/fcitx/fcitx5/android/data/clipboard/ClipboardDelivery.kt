@@ -40,4 +40,14 @@ object ClipboardDelivery {
 object ClipboardDeletionPolicy {
     fun needsTombstone(hasBeenSynced: Boolean, exposurePending: Boolean): Boolean =
         hasBeenSynced || exposurePending
+
+    /** Null means a provably unexposed row can be physically removed. Never strip shared payloads here. */
+    internal fun retainedDeletion(
+        old: org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry,
+        syncId: String,
+        now: Long,
+        deviceId: String,
+    ): org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry? =
+        if (!needsTombstone(old.hasBeenSynced, old.syncExposurePending)) null
+        else old.copy(syncId = syncId, deleted = true, updatedAt = now, lastModifiedBy = deviceId)
 }

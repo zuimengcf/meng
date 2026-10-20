@@ -251,16 +251,21 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     /** 被覆盖/拒绝的版本，仅供恢复面板使用，不直接加入可见列表。 */
     suspend fun revisions(): List<SyncRevision> = withSyncLock {
         ClipboardPurge.purgeExpiredDeletedUnlocked()
-        ClipboardOplog.readAll().asReversed().map { op ->
+        ClipboardOplog.readAll().asReversed().filter { op ->
+            ClipboardRevisionRecovery.canRestore(op, ::recoverableImage)
+        }.map { op ->
             SyncRevision(ClipboardOplog.revisionId(op), op.syncId, op.ts, op.deviceId, op.opType, op.entry, op.group)
         }
     }
+
+    private fun recoverableImage(path: String): Boolean =
+        ClipboardPurge.isPrivateClipboardImage(path) && File(path).isFile
 
     /** 显式恢复一个历史条目版本；恢复是新的本机版本，会正常进入同步。 */
     suspend fun restoreRevision(id: String): Boolean = withSyncLock {
         ClipboardPurge.purgeExpiredDeletedUnlocked()
         val op = ClipboardOplog.readAll().firstOrNull { ClipboardOplog.revisionId(it) == id } ?: return@withSyncLock false
-        if ((op.opType == ClipboardOplog.OP_DELETE && op.entry == null) || ClipboardOplog.isPurgedPayload(op)) return@withSyncLock false
+        if (!ClipboardRevisionRecovery.canRestore(op, ::recoverableImage)) return@withSyncLock false
         op.group?.let { payload ->
             val old = clbGroupDao.getBySyncId(op.syncId)
             val now = nextMutationTime()
@@ -288,12 +293,13 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             val group = payload.groupSyncId.takeIf { it.isNotBlank() }?.let { clbGroupDao.getBySyncId(it) }
                 ?: payload.groupName.takeIf { it.isNotBlank() }?.let { clbGroupDao.getByName(it) }
             clbDao.upsert(local.copy(text = payload.text, pinned = payload.pinned, timestamp = payload.timestamp,
-                type = payload.type, sensitive = payload.sensitive, deleted = payload.deleted,
+                type = payload.type, sensitive = payload.sensitive, deleted = false,
                 imagePath = imagePath, sortOrder = payload.sortOrder,
                 groupId = group?.id ?: 0, groupSyncId = group?.syncId ?: payload.groupSyncId,
                 updatedAt = now, syncId = local.syncId.ifEmpty { ClipboardOplog.newSyncId() },
                 lastModifiedBy = ClipboardOplog.deviceId))
-            ClipboardOplog.append(op.opType, local.syncId.ifEmpty { op.syncId }, payload.copy(deleted = payload.deleted), ts = now)
+            ClipboardOplog.append(ClipboardOplog.OP_INSERT, local.syncId.ifEmpty { op.syncId },
+                payload.copy(deleted = false, imagePath = imagePath, imageData = null), ts = now)
         }
         updateItemCount(); true
     }
@@ -398,20 +404,21 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         result?.let { if (lastEntry?.id == id) updateLastEntry(it) }
     }
 
-    /** Immediate deletion deliberately has no recoverable content and no undo. */
-    private suspend fun deleteEntryUnlocked(old: ClipboardEntry) {
-        val now = nextMutationTime()
+    /** Unexposed local rows are erased; shared/uncertain rows retain recoverable content for seven days. */
+    private suspend fun deleteEntryUnlocked(old: ClipboardEntry, now: Long = nextMutationTime()) {
         val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
-        val keep = ClipboardDeletionPolicy.needsTombstone(old.hasBeenSynced, old.syncExposurePending)
-        val paths = (listOfNotNull(old.imagePath) + ClipboardOplog.readAll()
-            .filter { it.syncId == stable }.mapNotNull { it.entry?.imagePath }).distinct()
-        if (keep) {
-            val tombstone = old.copy(syncId = stable, deleted = true, text = "", imagePath = null,
-                pinned = false, updatedAt = now, lastModifiedBy = ClipboardOplog.deviceId)
+        val tombstone = ClipboardDeletionPolicy.retainedDeletion(old, stable, now, ClipboardOplog.deviceId)
+        if (tombstone != null) {
+            // Ensure a live revision exists even for legacy/imported rows without an INSERT.
+            ClipboardOplog.archive(stable, old.updatedAt, old.lastModifiedBy,
+                entry = entryOp(old, false))
             clbDao.upsert(tombstone)
             ClipboardOplog.append(ClipboardOplog.OP_DELETE, stable, entry = entryOp(tombstone, true), ts = now)
-        } else clbDao.deleteById(old.id)
-        ClipboardOplog.stageDeletion(ClipboardOplog.Deletion(stable, now, !keep, paths))
+        } else {
+            val paths = (listOfNotNull(old.imagePath) + ClipboardOplog.imagePathsForSyncId(stable)).distinct()
+            clbDao.deleteById(old.id)
+            ClipboardOplog.stageDeletion(ClipboardOplog.Deletion(stable, now, hard = true, imagePaths = paths))
+        }
     }
 
     suspend fun delete(id: Int) = ClipboardDelivery.withLock {
@@ -427,13 +434,16 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             val ids = if (skipPinned) clbDao.findUnpinnedIds() else clbDao.findAllIds()
             if (lastEntry?.id?.let { it in ids } == true) lastEntry = null
             ClipboardOplog.withTransaction(clbDb) {
-                ids.forEach { id -> clbDao.get(id)?.let { deleteEntryUnlocked(it) } }
+                // Read once and persist one logical clock value, not one fsync/query per selected row.
+                val selected = ids.toHashSet()
+                val now = nextMutationTime()
+                clbDao.getAll().filter { it.id in selected }.forEach { deleteEntryUnlocked(it, now) }
             }
             updateItemCount(); ids
         }
     }
 
-    /** Retained for source compatibility; deletion is irreversible and cannot restore blank tombstones. */
+    /** Retained for source compatibility; explicit recovery goes through the validated history panel. */
     suspend fun undoDelete(vararg ids: Int) = Unit
 
     suspend fun realDelete() = withSyncLock {
@@ -838,7 +848,9 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             // 找出真正超上限需清理的条目 id
             val toRemove = clbDao.findUnpinnedOlderThan(cutoff)
             if (toRemove.isEmpty()) return
-            for (id in toRemove) clbDao.get(id)?.let { deleteEntryUnlocked(it) }
+            val selected = toRemove.toHashSet()
+            val now = nextMutationTime()
+            unpinned.filter { it.id in selected }.forEach { deleteEntryUnlocked(it, now) }
             updateItemCount()
         }
     }

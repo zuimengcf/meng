@@ -1,22 +1,45 @@
 package org.fcitx.fcitx5.android.data.clipboard
 
-import androidx.room.withTransaction
 import java.io.File
 import org.fcitx.fcitx5.android.utils.appContext
 
-/**
- * Destructive retention cleanup for deleted clipboard entries.
- * The deletion tombstone (sync id, deletion version and device) remains in the oplog/DB;
- * only plaintext and image bytes are removed after the retention window.
- */
+/** Expired payloads are erased; deletion identities and versions remain to prevent resurrection. */
 object ClipboardPurge {
     const val DEFAULT_RETENTION_MS: Long = 7L * 24L * 60L * 60L * 1000L
+
+    internal data class DeletionCandidate(
+        val syncId: String,
+        val through: Long,
+        val imagePaths: Set<String> = emptySet(),
+    )
+
+    /** Merge observations, never creating a rewrite rule for a blank legacy id. */
+    internal fun mergeDeletionCandidates(candidates: Iterable<DeletionCandidate>): List<ClipboardOplog.Deletion> {
+        val boundaries = linkedMapOf<String, Long>()
+        val paths = hashMapOf<String, MutableSet<String>>()
+        candidates.forEach { candidate ->
+            if (candidate.syncId.isNotBlank()) {
+                boundaries[candidate.syncId] = maxOf(boundaries[candidate.syncId] ?: Long.MIN_VALUE, candidate.through)
+                paths.getOrPut(candidate.syncId) { linkedSetOf() }.addAll(candidate.imagePaths)
+            }
+        }
+        return boundaries.map { (id, through) ->
+            ClipboardOplog.Deletion(id, through, hard = false, imagePaths = paths.getValue(id).toList())
+        }
+    }
 
     suspend fun purgeExpiredDeleted(
         now: Long = System.currentTimeMillis(),
         retentionMs: Long = DEFAULT_RETENTION_MS,
-    ): Int = ClipboardManager.withSyncLock {
-        purgeExpiredDeletedUnlocked(now, retentionMs)
+    ): Int = try {
+        ClipboardManager.withSyncLock { purgeExpiredDeletedUnlocked(now, retentionMs) }
+    } finally {
+        // secure_delete protects freed DB pages. Truncate the WAL outside syncLock,
+        // even after restart/no-op cleanup; never run a whole-database VACUUM here.
+        runCatching {
+            ClipboardManager.syncDatabase().openHelper.writableDatabase
+                .query("PRAGMA wal_checkpoint(TRUNCATE)").use { while (it.moveToNext()) { /* consume */ } }
+        }
     }
 
     internal suspend fun purgeExpiredDeletedUnlocked(
@@ -25,30 +48,45 @@ object ClipboardPurge {
     ): Int {
         require(retentionMs >= 0L) { "retention must not be negative" }
         val cutoff = now - retentionMs
+        val database = ClipboardManager.syncDatabase()
         val dao = ClipboardManager.syncDao()
-        val expired = dao.findDeletedBefore(cutoff)
-        val dirty = expired.filter { it.text.isNotEmpty() || it.imagePath != null || it.pinned }
-        val candidates = expired.mapNotNull { it.imagePath }.toSet() + ClipboardOplog.expiredImagePaths(cutoff)
-        // First make the Room redaction durable, never physically delete tombstone rows.
-        if (dirty.isNotEmpty()) ClipboardManager.syncDatabase().withTransaction {
-            dao.redactDeletedContent(dirty.map { it.id })
+        val dirty = dao.findDeletedBefore(cutoff)
+            .filter { it.text.isNotEmpty() || it.imagePath != null || it.pinned }
+        val rows = ClipboardOplog.readAll()
+        val through = ClipboardOplog.expiredDeleteTimes(cutoff, rows).toMutableMap()
+        dirty.filter { it.syncId.isNotBlank() }.forEach { row ->
+            through[row.syncId] = maxOf(through[row.syncId] ?: Long.MIN_VALUE, row.updatedAt)
         }
-        // Delete only unreferenced private files. Oplog paths are evaluated after conceptual redaction,
-        // so a crash here can retry from the still-durable journal rows.
-        val referenced = dao.getAllIncludingDeleted().mapNotNull { it.imagePath }.toSet() + ClipboardOplog.imagePaths(cutoff)
-        candidates.filter { isPrivateClipboardImage(it) && it !in referenced }.forEach {
-            val file = File(it)
-            check(!file.exists() || file.delete()) { "过期图片清理未完成，将在下次检查重试" }
+        // One pass, not one full-history search per expired tombstone. Already empty
+        // histories generate no plans, so opening the panel does not keep rewriting them.
+        val candidates = ArrayList<DeletionCandidate>()
+        dirty.forEach { row ->
+            if (row.syncId.isNotBlank()) candidates += DeletionCandidate(
+                row.syncId, through.getValue(row.syncId), listOfNotNull(row.imagePath).toSet())
         }
-        // Finally atomically rewrite old journal payloads; a crash before this point remains retry-safe.
-        val redactedRevisions = ClipboardOplog.purgeExpiredDeleted(cutoff)
-        if (dirty.isNotEmpty()) runCatching {
-            val db = ClipboardManager.syncDatabase().openHelper.writableDatabase
-            db.query("PRAGMA wal_checkpoint(TRUNCATE)").use { while (it.moveToNext()) { /* consume */ } }
-            db.execSQL("VACUUM")
-            db.query("PRAGMA wal_checkpoint(TRUNCATE)").use { while (it.moveToNext()) { /* consume */ } }
+        rows.forEach { op ->
+            val boundary = through[op.syncId]
+            val entry = op.entry
+            if (entry != null && ClipboardOplog.shouldRedactRevision(op.ts, boundary) &&
+                (entry.text.isNotEmpty() || entry.imagePath != null || entry.imageData != null || entry.pinned)) {
+                candidates += DeletionCandidate(op.syncId, boundary!!, listOfNotNull(entry.imagePath).toSet())
+            }
         }
-        if (dirty.isNotEmpty() || redactedRevisions > 0) ClipboardAuditLog.record("PURGE", maxOf(dirty.size, 1))
+        val plans = mergeDeletionCandidates(candidates).toMutableList()
+        val legacyPaths = dirty.filter { it.syncId.isBlank() }.mapNotNull { it.imagePath }.distinct()
+        if (legacyPaths.isNotEmpty()) {
+            // Blank identities are image-cleanup-only in Oplog; the durable outbox
+            // retains retry paths without ever matching unrelated blank-id revisions.
+            plans += ClipboardOplog.Deletion("", cutoff, hard = false, imagePaths = legacyPaths)
+        }
+        if (dirty.isEmpty() && plans.isEmpty()) return 0
+        ClipboardOplog.withTransaction(database) {
+            if (dirty.isNotEmpty()) dao.redactDeletedContent(dirty.map { it.id })
+            plans.forEach(ClipboardOplog::stageDeletion)
+        }
+        // Publication rewrites once and deletes only private, unreferenced images;
+        // failure leaves all deletion tasks available for replay before the next sync.
+        ClipboardAuditLog.record("PURGE", maxOf(dirty.size, plans.size, 1))
         return dirty.size
     }
 

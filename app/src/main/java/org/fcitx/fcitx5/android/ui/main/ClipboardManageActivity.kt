@@ -373,8 +373,9 @@ class ClipboardManageActivity : AppCompatActivity() {
     private fun showSyncHistory() {
         scope.launch {
             val rows = withContext(Dispatchers.IO) {
-                ClipboardManager.revisions().filter { it.entry?.deleted == false || it.group != null }
-                    .sortedByDescending { it.ts }
+                // Manager.revisions() applies ClipboardRevisionRecovery, including image
+                // file/private-path checks. Do not resurrect the old deleted==false filter.
+                ClipboardManager.revisions().sortedByDescending { it.ts }
             }
             if (rows.isEmpty()) { toast("暂无可恢复的历史版本"); return@launch }
             val formatter = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
@@ -390,7 +391,7 @@ class ClipboardManageActivity : AppCompatActivity() {
                     val description = revision.entry?.text ?: "分组：${revision.group?.name.orEmpty()}"
                     AlertDialog.Builder(this@ClipboardManageActivity)
                         .setTitle("恢复这个历史版本？")
-                        .setMessage("恢复会产生一个新版本并同步到在线设备；不会清除其他历史。\n\n$description")
+                        .setMessage("从未同步的内容会彻底删除；已同步、可能已送达或旧状态不明的正文和图像保留 7 天可恢复，过期后仅留空墓碑且不能恢复。\n\n恢复会产生一个新版本并同步到在线设备；不会清除其他历史。\n\n$description")
                         .setPositiveButton("恢复") { _, _ ->
                             scope.launch {
                                 val result = runCatching { withContext(Dispatchers.IO) { ClipboardManager.restoreRevision(revision.id) } }
@@ -587,11 +588,11 @@ class ClipboardManageActivity : AppCompatActivity() {
         }
     }
 
-    /** 删除确认弹窗；用户确认后立即且不可恢复地删除。 */
+    /** 删除确认弹窗；同步状态决定七天保留期，过期后仅留不可恢复的空墓碑。 */
     private fun confirmDelete(entry: ClipboardEntry) {
         AlertDialog.Builder(this)
             .setTitle(R.string.delete)
-            .setMessage(R.string.clipboard_delete_confirm)
+            .setMessage("从未同步的内容会彻底删除；已同步、可能已送达或旧状态不明的正文和图像保留 7 天可恢复，过期后仅留空墓碑且不能恢复。\n\n确定删除这条剪切板记录？")
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 scope.launch {
                     withContext(Dispatchers.IO) { ClipboardManager.delete(entry.id) }
@@ -603,7 +604,7 @@ class ClipboardManageActivity : AppCompatActivity() {
             .show()
     }
 
-    /** 立即删除只给出简短反馈，不提供撤销入口。 */
+    /** 删除只给出简短反馈；同步历史在保留期内可恢复。 */
     private fun showDeletedSnackbar() {
         Snackbar.make(binding.root, "已删除", Snackbar.LENGTH_SHORT).show()
     }
