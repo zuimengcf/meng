@@ -218,7 +218,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             .addCallback(object : androidx.room.RoomDatabase.Callback() {
                 override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                     super.onOpen(db)
-                    db.execSQL("PRAGMA secure_delete=ON")
+                    ClipboardDatabasePragmas.enableSecureDelete(db)
                 }
             })
             // A downgrade must fail instead of silently destroying the clipboard database.
