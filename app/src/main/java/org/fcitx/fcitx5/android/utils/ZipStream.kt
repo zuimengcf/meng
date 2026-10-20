@@ -5,39 +5,35 @@ package org.fcitx.fcitx5.android.utils
 
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.util.HashSet
+import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
-/** Safe extraction limits shared by user-data import and JVM tests. */
-object ZipStreamLimits {
-    const val MAX_ENTRIES = 4096
-    const val MAX_ENTRY_BYTES = 64L * 1024L * 1024L
-    const val MAX_TOTAL_BYTES = 512L * 1024L * 1024L
+/** Write one backup entry without size or count limits; owns and closes [source]. */
+fun ZipOutputStream.writeBackupEntry(name: String, source: InputStream? = null) {
+    source.use { input ->
+        putNextEntry(ZipEntry(name))
+        input?.copyTo(this)
+        closeEntry()
+    }
 }
-
-data class ZipExtractionLimits(
-    val maxEntries: Int = ZipStreamLimits.MAX_ENTRIES,
-    val maxEntryBytes: Long = ZipStreamLimits.MAX_ENTRY_BYTES,
-    val maxTotalBytes: Long = ZipStreamLimits.MAX_TOTAL_BYTES,
-)
 
 /**
  * Extract a ZIP into [destDir]. Entry names are treated as untrusted paths.
- * Directories are validated too, duplicate names are rejected, and bounded
- * streaming prevents zip bombs from exhausting storage or memory.
+ * Directories are validated too and duplicate names are rejected. Contents are
+ * streamed without application-imposed file size, archive size or entry limits;
+ * callers must allow for the storage required by the uncompressed archive.
  */
-fun ZipInputStream.extract(destDir: File, limits: ZipExtractionLimits = ZipExtractionLimits()): List<File> {
-    require(limits.maxEntries > 0 && limits.maxEntryBytes >= 0 && limits.maxTotalBytes >= 0)
+fun ZipInputStream.extract(destDir: File): List<File> {
     require(!destDir.exists() || destDir.isDirectory) { "ZIP destination is not a directory" }
     if (!destDir.exists() && !destDir.mkdirs()) throw IOException("Cannot create ZIP destination")
     val root = destDir.canonicalFile
     val rootPath = root.path
     val seen = HashSet<String>()
-    var count = 0
-    var total = 0L
     var entry = nextEntry
     while (entry != null) {
-        if (++count > limits.maxEntries) throw SecurityException("too many ZIP entries")
         val normalized = validateZipEntryName(entry.name)
         if (!seen.add(normalized)) throw SecurityException("duplicate ZIP entry: $normalized")
         val out = File(root, normalized).canonicalFile
@@ -48,19 +44,8 @@ fun ZipInputStream.extract(destDir: File, limits: ZipExtractionLimits = ZipExtra
             if (!out.exists() && !out.mkdirs()) throw IOException("Cannot create ZIP directory: $normalized")
         } else {
             out.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw IOException("Cannot create ZIP parent") }
-            var written = 0L
             out.outputStream().buffered().use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val read = read(buffer)
-                    if (read < 0) break
-                    written += read
-                    total += read
-                    if (written > limits.maxEntryBytes || total > limits.maxTotalBytes) {
-                        throw SecurityException("ZIP extraction size limit exceeded")
-                    }
-                    output.write(buffer, 0, read)
-                }
+                copyTo(output)
             }
         }
         closeEntry()

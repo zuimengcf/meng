@@ -16,7 +16,6 @@ import org.fcitx.fcitx5.android.utils.*
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
-import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
@@ -33,25 +32,10 @@ object UserDataManager {
         "recently_used" to File(context.filesDir, RecentlyUsed.DIR_NAME),
     )
 
-    /** Both export and import enforce the same uncompressed ZIP budget. */
+    /** Stream backups without application-imposed size or entry-count limits. */
     private class ArchiveWriter(val zip: ZipOutputStream) {
-        private var entries = 0
-        private var total = 0L
         fun entry(name: String, source: InputStream? = null) {
-            require(++entries <= ZipStreamLimits.MAX_ENTRIES) { "Backup has too many files" }
-            zip.putNextEntry(ZipEntry(name))
-            if (source != null) source.use { input ->
-                var size = 0L
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    size += n; total += n
-                    require(size <= ZipStreamLimits.MAX_ENTRY_BYTES && total <= ZipStreamLimits.MAX_TOTAL_BYTES) { "Backup exceeds extraction size limit" }
-                    zip.write(buffer, 0, n)
-                }
-            }
-            zip.closeEntry()
+            zip.writeBackupEntry(name, source)
         }
         fun tree(root: File, prefix: String, protectedPreferences: Boolean = false) {
             if (!root.exists()) return
