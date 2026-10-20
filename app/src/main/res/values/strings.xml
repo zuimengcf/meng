@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name_release">梦输入法</string>
-    <string name="app_name_debug">梦输入法 (Debug)</string>
+    <string name="app_name_release">Meng</string>
+    <string name="app_name_debug">Meng (Debug)</string>
     <string name="smart_input">智能输入</string>
     <string name="smart_group_stats">智能统计</string>
     <string name="smart_group_suggest">智能联想</string>
