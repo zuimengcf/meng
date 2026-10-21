@@ -367,12 +367,12 @@ object InputStatsManager {
     suspend fun topWords(limit: Int = 20): List<FreqWord> = if (initialized) dao.topWords(limit) else emptyList()
 
     /** 按最近活跃时间筛选常用词；计数仍是数据库中的累计值，不冒充区间计数。 */
-    suspend fun topWordsSince(fromMillis: Long, limit: Int = 1000): List<FreqWord> =
-        if (initialized) dao.topWordsSince(fromMillis, limit) else emptyList()
+    suspend fun topWordsSince(fromMillis: Long, limit: Int = 30, offset: Int = 0): List<FreqWord> =
+        if (initialized) dao.topWordsSince(fromMillis, limit, offset) else emptyList()
 
     /** Search all words; the date is a recent-activity filter, never an interval count. */
-    suspend fun searchWords(query: String, fromMillis: Long, limit: Int = 1000): List<FreqWord> =
-        if (initialized && query.isNotBlank()) dao.searchWords(query, fromMillis, limit) else emptyList()
+    suspend fun searchWords(query: String, fromMillis: Long, limit: Int = 30, offset: Int = 0): List<FreqWord> =
+        if (initialized && query.isNotBlank()) dao.searchWords(query, fromMillis, limit, offset) else emptyList()
 
     /** 按「最近上屏词」取联想候选（连续性关联），功能 2 预测的数据入口。 */
     suspend fun assocFor(prev: String, limit: Int = 10): List<WordAssoc> = if (initialized) dao.assocFor(prev, limit) else emptyList()

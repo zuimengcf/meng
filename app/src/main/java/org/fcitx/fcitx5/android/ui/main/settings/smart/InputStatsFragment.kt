@@ -7,14 +7,20 @@ package org.fcitx.fcitx5.android.ui.main.settings.smart
 import android.app.AlertDialog
 import android.os.Bundle
 import android.text.InputType
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.core.view.setPadding
 import androidx.fragment.app.Fragment
@@ -49,6 +55,12 @@ class InputStatsFragment : Fragment() {
     private var outcomeView: TextView? = null
     private var wordLimitView: TextView? = null
     private var assocLimitView: TextView? = null
+    private var wordLoadMoreView: TextView? = null
+    private var wordPageSize = 30
+    private var wordLoaded = 0
+
+    /** 联想只在搜索时展示；未搜索时为空，避免一次性加载全量。 */
+    private var assocSearched = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val ctx = requireContext()
@@ -78,27 +90,43 @@ class InputStatsFragment : Fragment() {
         })
         root.addView(rangeBar(ctx))
         root.addView(TextView(ctx).apply { text = "按最近活跃时间筛选；括号为累计次数，不是区间内次数。" })
-        root.addView(Button(ctx).apply {
-            text = "清空全部常用词"; setOnClickListener {
-                confirmScopedClear("清空全部常用词？忽略搜索和日期筛选，不影响日统计、联想和纠错学习。") { InputStatsManager.clearWords() }
-            }
-        })
-        root.addView(searchBox(ctx, R.string.smart_stats_search_words) { wordQuery = it; refresh() })
+        root.addView(pageSizeBar(ctx))
+        root.addView(searchBox(ctx, R.string.smart_stats_search_words) { wordQuery = it; wordLoaded = 0; refresh() })
         wordRows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
         wordLimitView = TextView(ctx).apply { setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); root.addView(this) }
+        wordLoadMoreView = TextView(ctx).apply {
+            text = "加载更多"; setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray))
+            setPadding(0, ctx.dp(8), 0, ctx.dp(4)); setOnClickListener { loadMoreWords() }
+            root.addView(this)
+        }
         root.addView(TextView(ctx).apply {
             setText(R.string.smart_stats_assoc)
             setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
             setPadding(0, ctx.dp(16), 0, ctx.dp(4))
         })
-        root.addView(Button(ctx).apply {
-            text = "清空全部学习联想"; setOnClickListener {
-                confirmScopedClear("清空全部学习联想？忽略搜索，不影响日统计、常用词或纠错学习；内置联想词表不在此删除。") { InputStatsManager.clearAssociations() }
-            }
-        })
-        root.addView(searchBox(ctx, R.string.smart_stats_search_assoc) { assocQuery = it; refresh() })
+        root.addView(searchBox(ctx, R.string.smart_stats_search_assoc) { assocQuery = it; assocSearched = true; refresh() })
         assocRows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
         assocLimitView = TextView(ctx).apply { setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); root.addView(this) }
+        // 危险操作区：合并到底部，强提示。
+        root.addView(TextView(ctx).apply {
+            setText("危险操作"); setTextColor(ContextCompat.getColor(ctx, android.R.color.holo_red_dark))
+            textSize = 16f; setPadding(0, ctx.dp(16), 0, ctx.dp(4))
+        })
+        root.addView(TextView(ctx).apply {
+            text = "以下操作会删除数据，不可恢复，请谨慎使用。"
+            setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); textSize = 13f
+            setPadding(0, 0, 0, ctx.dp(8))
+        })
+        root.addView(Button(ctx).apply {
+            setText("清空全部常用词"); setOnClickListener {
+                confirmScopedClear("危险操作：清空全部常用词？忽略搜索和日期筛选，不影响日统计、联想和纠错学习。此操作不可撤销！", action = { InputStatsManager.clearWords() })
+            }
+        })
+        root.addView(Button(ctx).apply {
+            setText("清空全部学习联想"); setOnClickListener {
+                confirmScopedClear("危险操作：清空全部学习联想？忽略搜索，不影响日统计、常用词或纠错学习；内置联想词表不在此删除。此操作不可撤销！", action = { InputStatsManager.clearAssociations() })
+            }
+        })
         root.addView(Button(ctx).apply {
             setText(R.string.smart_stats_clear_all); setOnClickListener { confirmClearAll() }
         })
@@ -110,19 +138,52 @@ class InputStatsFragment : Fragment() {
         WordRange.values().forEach { range ->
             addView(Button(ctx).apply {
                 setText(range.label)
-                setOnClickListener { wordRange = range; refresh() }
+                setOnClickListener { wordRange = range; wordLoaded = 0; refresh() }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
     }
 
-    private fun searchBox(ctx: android.content.Context, hint: Int, changed: (String) -> Unit): EditText = EditText(ctx).apply {
-        setHint(hint); inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true)
-        addTextChangedListener(SimpleTextWatcher { changed(it) })
+    /** 每页条数下拉选择：30 / 50 / 100，默认 30。 */
+    private fun pageSizeBar(ctx: android.content.Context): View = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        addView(TextView(ctx).apply {
+            text = "每页条数"; textSize = 15f; setPadding(0, 0, ctx.dp(8), 0)
+        })
+        val spinner = Spinner(ctx)
+        val adapter = ArrayAdapter(ctx, android.R.layout.simple_spinner_item, listOf("30 条", "50 条", "100 条")).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        spinner.adapter = adapter
+        spinner.setSelection(listOf(30, 50, 100).indexOf(wordPageSize).coerceAtLeast(0))
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val size = listOf(30, 50, 100)[position]
+                if (size != wordPageSize) { wordPageSize = size; wordLoaded = 0; refresh() }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    /** 搜索栏：放大镜图标 + 输入框。 */
+    private fun searchBox(ctx: android.content.Context, hint: Int, changed: (String) -> Unit): View = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        addView(ImageButton(ctx).apply {
+            setImageResource(R.drawable.ic_baseline_search_24)
+            contentDescription = getString(R.string.smart_stats_search_words)
+            background = ContextCompat.getDrawable(ctx, android.R.drawable.edit_text)
+            setPadding(ctx.dp(4), 0, 0, 0)
+        }, LinearLayout.LayoutParams(ctx.dp(40), ctx.dp(40)))
+        addView(EditText(ctx).apply {
+            setHint(hint); inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true)
+            setPadding(0, 0, 0, 0)
+            addTextChangedListener(SimpleTextWatcher { changed(it) })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) { super.onViewCreated(view, savedInstanceState); lastData?.let(::render) }
     override fun onResume() { super.onResume(); refresh() }
-    override fun onDestroyView() { refreshJob?.cancel(); refreshJob = null; bodyViews = emptyList(); wordRows = null; assocRows = null; outcomeView = null; wordLimitView = null; assocLimitView = null; super.onDestroyView() }
+    override fun onDestroyView() { refreshJob?.cancel(); refreshJob = null; bodyViews = emptyList(); wordRows = null; assocRows = null; outcomeView = null; wordLimitView = null; assocLimitView = null; wordLoadMoreView = null; super.onDestroyView() }
 
     private fun refresh() {
         refreshJob?.cancel()
@@ -131,18 +192,27 @@ class InputStatsFragment : Fragment() {
                 val data = withContext(Dispatchers.IO) {
                     val wordQueryNow = wordQuery.trim()
                     val assocQueryNow = assocQuery.trim()
+                    // 常用词分页懒加载：只取当前已加载的条目数。
+                    val words = if (wordQueryNow.isEmpty()) InputStatsManager.topWordsSince(wordRange.fromMillis(), wordPageSize, wordLoaded)
+                        else InputStatsManager.searchWords(wordQueryNow, wordRange.fromMillis(), wordPageSize, wordLoaded)
                     StatsData(InputStatsManager.todayStats(), InputStatsManager.weekStats(), InputStatsManager.monthStats(),
                         InputStatsManager.dailySummary(),
-                        if (wordQueryNow.isEmpty()) InputStatsManager.topWordsSince(wordRange.fromMillis())
-                        else InputStatsManager.searchWords(wordQueryNow, wordRange.fromMillis()),
-                        if (assocQueryNow.isEmpty()) InputStatsManager.allAssoc(1000)
-                        else InputStatsManager.searchAssoc(assocQueryNow),
-                        InputStatsManager.commitOutcomeCounts(), wordQueryNow.isNotEmpty(), assocQueryNow.isNotEmpty())
+                        words,
+                        // 联想仅搜索时加载，最多 pageSize 条；未搜索时为空列表。
+                        if (assocSearched && assocQueryNow.isNotEmpty()) InputStatsManager.searchAssoc(assocQueryNow, wordPageSize) else emptyList(),
+                        InputStatsManager.commitOutcomeCounts(), wordQueryNow.isNotEmpty(), assocSearched && assocQueryNow.isNotEmpty())
                 }
                 lastData = data; render(data)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { Timber.w(e, "Failed to load input statistics"); if (lastData == null) bodyViews.forEach { it.setText(R.string.smart_stats_load_failed) } }
         }
+    }
+
+    /** 点击「加载更多」追加下一页常用词。 */
+    private fun loadMoreWords() {
+        val q = wordQuery.trim()
+        wordLoaded += wordPageSize
+        refresh()
     }
 
     private data class StatsData(val today: InputDailyStats?, val week: List<InputDailyStats>, val month: List<InputDailyStats>, val all: List<InputDailyStats>, val topWords: List<FreqWord>, val assocs: List<WordAssoc>, val outcomes: InputStatsManager.CommitOutcomeCounts, val wordSearch: Boolean, val assocSearch: Boolean) {
@@ -175,13 +245,15 @@ class InputStatsFragment : Fragment() {
             wordRows?.addView(managedRow(ctx, "${word.word}（${word.count}）") { confirmDelete(ctx.getString(R.string.smart_stats_delete_word_confirm, word.word)) { InputStatsManager.deleteWord(word.word) } })
         }
         if (wordRows?.childCount == 0) wordRows?.addView(emptyText(ctx))
-        wordLimitView?.text = if (snapshot.wordSearch && snapshot.topWords.size >= 1000) ctx.getString(R.string.smart_stats_search_limit) else ""
+        // 分页：若本次恰好取满一页，提示可继续加载更多；否则隐藏。
+        val hasMore = snapshot.topWords.size >= wordPageSize
+        wordLoadMoreView?.visibility = if (hasMore) View.VISIBLE else View.GONE
         val aq = assocQuery.trim()
         snapshot.assocs.filter { aq.isEmpty() || "${it.prev} ${it.next}".contains(aq, true) }.forEach { assoc ->
             assocRows?.addView(managedRow(ctx, "${assoc.prev} → ${assoc.next}（${assoc.count}）") { confirmDelete(ctx.getString(R.string.smart_stats_delete_assoc_confirm, assoc.prev, assoc.next)) { InputStatsManager.deleteAssoc(assoc.key) } })
         }
         if (assocRows?.childCount == 0) assocRows?.addView(emptyText(ctx))
-        assocLimitView?.text = if (snapshot.assocSearch && snapshot.assocs.size >= 1000) ctx.getString(R.string.smart_stats_search_limit) else ""
+        assocLimitView?.text = if (snapshot.assocSearch && snapshot.assocs.size >= wordPageSize) ctx.getString(R.string.smart_stats_search_limit) else ""
     }
 
     private fun managedRow(ctx: android.content.Context, label: String, delete: () -> Unit): View = LinearLayout(ctx).apply {
@@ -199,17 +271,38 @@ class InputStatsFragment : Fragment() {
             }
         }.show()
     }
-    private fun confirmScopedClear(message: String, action: suspend () -> Unit) {
-        AlertDialog.Builder(requireContext()).setMessage(message).setNegativeButton(android.R.string.cancel, null).setPositiveButton("清空") { _, _ ->
-            viewLifecycleOwner.lifecycleScope.launch {
-                val result = runCatching { withContext(Dispatchers.IO) { action() } }
-                if (result.isFailure) android.widget.Toast.makeText(requireContext(), "清空未完全完成，请刷新检查", android.widget.Toast.LENGTH_SHORT).show()
-                lastData = null; refresh()
+    private fun confirmScopedClear(message: String, action: suspend () -> Unit, strong: Boolean = false) {
+        val ctx = requireContext()
+        val builder = AlertDialog.Builder(ctx)
+            .setTitle("危险操作")
+            .setMessage(message)
+            .setNegativeButton(android.R.string.cancel, null)
+        // 最危险的操作要求二次确认（输入固定短语）。
+        if (strong) {
+            val input = EditText(ctx).apply { hint = "输入「确认清空」以继续"; inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true) }
+            val pad = ctx.dp(20)
+            input.setPadding(pad, ctx.dp(8), pad, 0)
+            builder.setView(input)
+            builder.setPositiveButton("我确认，不可恢复") { _, _ ->
+                if (input.text.toString().trim() != "确认清空") {
+                    Toast.makeText(ctx, "未输入确认短语，已取消清空", Toast.LENGTH_SHORT).show(); return@setPositiveButton
+                }
+                doClear(action)
             }
-        }.show()
+        } else {
+            builder.setPositiveButton("我确认，不可恢复") { _, _ -> doClear(action) }
+        }
+        builder.show()
+    }
+    private fun doClear(action: suspend () -> Unit) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { action() } }
+            if (result.isFailure) Toast.makeText(requireContext(), "清空未完全完成，请刷新检查", Toast.LENGTH_SHORT).show()
+            lastData = null; refresh()
+        }
     }
     private fun confirmClearAll() {
-        confirmScopedClear(getString(R.string.smart_stats_clear_confirm)) { InputStatsManager.clearStatsAndAssoc() }
+        confirmScopedClear(getString(R.string.smart_stats_clear_confirm) + "\n\n此操作不可撤销！", action = { InputStatsManager.clearStatsAndAssoc() }, strong = true)
     }
 
     private enum class WordRange(val label: String) {
