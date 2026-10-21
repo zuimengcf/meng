@@ -35,7 +35,6 @@ import org.fcitx.fcitx5.android.data.stats.InputStatsManager
 import org.fcitx.fcitx5.android.data.stats.db.FreqWord
 import org.fcitx.fcitx5.android.data.stats.db.InputDailyStats
 import org.fcitx.fcitx5.android.data.stats.db.WordAssoc
-import org.fcitx.fcitx5.android.utils.Const
 import splitties.dimensions.dp
 import timber.log.Timber
 import java.time.LocalDate
@@ -66,11 +65,6 @@ class InputStatsFragment : Fragment() {
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val ctx = requireContext()
         val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(ctx.dp(16)) }
-        root.addView(TextView(ctx).apply {
-            text = "${getString(R.string.current_version)}：${Const.versionName}"
-            textSize = 14f
-            setPadding(0, 0, 0, ctx.dp(12))
-        })
         bodyViews = listOf(
             R.string.smart_stats_today, R.string.smart_stats_week,
             R.string.smart_stats_month, R.string.smart_stats_all
@@ -89,15 +83,11 @@ class InputStatsFragment : Fragment() {
             setText(R.string.smart_stats_loading); textSize = 14f
             setPadding(0, 0, 0, ctx.dp(12)); root.addView(this)
         }
-        root.addView(TextView(ctx).apply {
-            setText(R.string.smart_stats_top_words)
-            setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
-            setPadding(0, ctx.dp(8), 0, ctx.dp(4))
-        })
+        root.addView(searchHeader(ctx, R.string.smart_stats_top_words, R.string.smart_stats_search_words,
+            query = { wordQuery }) { wordQuery = it; wordLoaded = 0; refresh() })
         root.addView(rangeBar(ctx))
         root.addView(TextView(ctx).apply { text = "按最近活跃时间筛选；括号为累计次数，不是区间内次数。" })
         root.addView(pageSizeBar(ctx))
-        root.addView(searchBox(ctx, R.string.smart_stats_search_words) { wordQuery = it; wordLoaded = 0; refresh() })
         wordRows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
         wordLimitView = TextView(ctx).apply { setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); root.addView(this) }
         wordLoadMoreView = TextView(ctx).apply {
@@ -105,35 +95,43 @@ class InputStatsFragment : Fragment() {
             setPadding(0, ctx.dp(8), 0, ctx.dp(4)); setOnClickListener { loadMoreWords() }
             root.addView(this)
         }
-        root.addView(TextView(ctx).apply {
-            setText(R.string.smart_stats_assoc)
-            setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
-            setPadding(0, ctx.dp(16), 0, ctx.dp(4))
-        })
-        root.addView(searchBox(ctx, R.string.smart_stats_search_assoc) { assocQuery = it; assocSearched = true; refresh() })
+        root.addView(searchHeader(ctx, R.string.smart_stats_assoc, R.string.smart_stats_search_assoc,
+            query = { assocQuery }) { assocQuery = it; assocSearched = true; refresh() })
         assocRows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
         assocLimitView = TextView(ctx).apply { setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); root.addView(this) }
-        // 危险操作区：合并到底部，强提示。
-        root.addView(TextView(ctx).apply {
-            setText("危险操作"); setTextColor(ContextCompat.getColor(ctx, android.R.color.holo_red_dark))
-            textSize = 16f; setPadding(0, ctx.dp(16), 0, ctx.dp(4))
+        // 每次创建页面都默认折叠；展开不代表确认删除，仍保留原有确认流程。
+        val dangerActions = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        root.addView(Button(ctx).apply {
+            text = "危险操作 ▸"
+            setTextColor(ContextCompat.getColor(ctx, android.R.color.holo_red_dark))
+            contentDescription = "展开危险操作"
+            setOnClickListener {
+                val expanded = dangerActions.visibility != View.VISIBLE
+                dangerActions.visibility = if (expanded) View.VISIBLE else View.GONE
+                text = if (expanded) "危险操作 ▾" else "危险操作 ▸"
+                contentDescription = if (expanded) "收起危险操作" else "展开危险操作"
+            }
         })
-        root.addView(TextView(ctx).apply {
+        root.addView(dangerActions)
+        dangerActions.addView(TextView(ctx).apply {
             text = "以下操作会删除数据，不可恢复，请谨慎使用。"
             setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); textSize = 13f
             setPadding(0, 0, 0, ctx.dp(8))
         })
-        root.addView(Button(ctx).apply {
+        dangerActions.addView(Button(ctx).apply {
             setText("清空全部常用词"); setOnClickListener {
                 confirmScopedClear("危险操作：清空全部常用词？忽略搜索和日期筛选，不影响日统计、联想和纠错学习。此操作不可撤销！", action = { InputStatsManager.clearWords() })
             }
         })
-        root.addView(Button(ctx).apply {
+        dangerActions.addView(Button(ctx).apply {
             setText("清空全部学习联想"); setOnClickListener {
                 confirmScopedClear("危险操作：清空全部学习联想？忽略搜索，不影响日统计、常用词或纠错学习；内置联想词表不在此删除。此操作不可撤销！", action = { InputStatsManager.clearAssociations() })
             }
         })
-        root.addView(Button(ctx).apply {
+        dangerActions.addView(Button(ctx).apply {
             setText(R.string.smart_stats_clear_all); setOnClickListener { confirmClearAll() }
         })
         return ScrollView(ctx).apply { addView(root) }
@@ -171,20 +169,39 @@ class InputStatsFragment : Fragment() {
         addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
-    /** 搜索栏：放大镜图标 + 输入框。 */
-    private fun searchBox(ctx: android.content.Context, hint: Int, changed: (String) -> Unit): View = LinearLayout(ctx).apply {
+    /** 小标题旁仅保留一个搜索图标；点击后输入、修改或清除当前搜索。 */
+    private fun searchHeader(ctx: android.content.Context, title: Int, hint: Int, query: () -> String, changed: (String) -> Unit): View = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, ctx.dp(8), 0, ctx.dp(4))
+        addView(TextView(ctx).apply {
+            setText(title)
+            setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
+        })
         addView(ImageButton(ctx).apply {
             setImageResource(R.drawable.ic_baseline_search_24)
-            contentDescription = getString(R.string.smart_stats_search_words)
-            background = ContextCompat.getDrawable(ctx, android.R.drawable.edit_text)
-            setPadding(ctx.dp(4), 0, 0, 0)
-        }, LinearLayout.LayoutParams(ctx.dp(40), ctx.dp(40)))
-        addView(EditText(ctx).apply {
-            setHint(hint); inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true)
-            setPadding(0, 0, 0, 0)
-            addTextChangedListener(SimpleTextWatcher { changed(it) })
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            contentDescription = getString(hint)
+            val backgroundAttrs = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackgroundBorderless))
+            background = backgroundAttrs.getDrawable(0)
+            backgroundAttrs.recycle()
+            setPadding(ctx.dp(12))
+            setOnClickListener {
+                val input = EditText(ctx).apply {
+                    setHint(hint); inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true)
+                    setText(query()); setSelection(text.length)
+                }
+                val inputContainer = LinearLayout(ctx).apply {
+                    setPadding(ctx.dp(24), 0, ctx.dp(24), 0)
+                    addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                }
+                AlertDialog.Builder(ctx)
+                    .setTitle(hint)
+                    .setView(inputContainer)
+                    .setPositiveButton("搜索") { _, _ -> changed(input.text.toString().trim()) }
+                    .setNeutralButton("清除搜索") { _, _ -> changed("") }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+        }, LinearLayout.LayoutParams(ctx.dp(48), ctx.dp(48)))
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) { super.onViewCreated(view, savedInstanceState); lastData?.let(::render) }
