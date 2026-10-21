@@ -5,6 +5,7 @@
 package org.fcitx.fcitx5.android.ui.main.settings.smart
 
 import android.app.AlertDialog
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -36,6 +37,7 @@ import org.fcitx.fcitx5.android.data.stats.db.FreqWord
 import org.fcitx.fcitx5.android.data.stats.db.InputDailyStats
 import org.fcitx.fcitx5.android.data.stats.db.WordAssoc
 import splitties.dimensions.dp
+import splitties.resources.styledColor
 import timber.log.Timber
 import java.time.LocalDate
 import java.time.ZoneId
@@ -169,16 +171,22 @@ class InputStatsFragment : Fragment() {
         addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
-    /** 小标题旁仅保留一个搜索图标；点击后输入、修改或清除当前搜索。 */
+    /** 标题在左、搜索按钮独立靠右；前景色随浅色 / 深色主题切换。 */
     private fun searchHeader(ctx: android.content.Context, title: Int, hint: Int, query: () -> String, changed: (String) -> Unit): View = LinearLayout(ctx).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         setPadding(0, ctx.dp(8), 0, ctx.dp(4))
+        val foregroundColor = ctx.styledColor(android.R.attr.textColorPrimary)
         addView(TextView(ctx).apply {
             setText(title)
             setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
+            setTextColor(foregroundColor)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginEnd = ctx.dp(12)
         })
         addView(ImageButton(ctx).apply {
             setImageResource(R.drawable.ic_baseline_search_24)
+            imageTintList = ColorStateList.valueOf(foregroundColor)
             contentDescription = getString(hint)
             val backgroundAttrs = ctx.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackgroundBorderless))
             background = backgroundAttrs.getDrawable(0)
