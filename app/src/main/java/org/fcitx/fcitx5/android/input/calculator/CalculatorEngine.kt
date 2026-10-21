@@ -38,14 +38,18 @@ class CalculatorEngine {
             rawInput = ""
             finished = false
         }
-        if (char.isDigit() || char == '.' ||
+        val supported = char.isDigit() || char == '.' ||
             char == '+' || char == '-' || char == '*' || char == '/' ||
             char == '(' || char == ')' || char == '='
-        ) {
-            // 已输入 '=' 后继续输入数字，视为新一轮（等号后重建）
-            if (rawInput.endsWith('=')) rawInput = ""
-            rawInput += char
+        if (!supported) {
+            // 输入法可能把标点等旁路字符也送到这里；不能忽略，否则会把两段数字拼接。
+            rawInput = ""
+            finished = false
+            return false
         }
+        // 已输入 '=' 后继续输入数字，视为新一轮（等号后重建）
+        if (rawInput.endsWith('=')) rawInput = ""
+        rawInput += char
         return isActive()
     }
 
@@ -120,12 +124,10 @@ class CalculatorEngine {
     private fun evaluate(expression: String): String? {
         if (expression.isEmpty() || expression.any { it.isWhitespace() }) return null
         // 仅允许合法字符
-        if (expression.any { ch ->
+        if (!expression.all { ch ->
                 ch.isDigit() || ch == '.' || ch == '+' || ch == '-' ||
                     ch == '*' || ch == '/' || ch == '(' || ch == ')'
-            }.not()) return null
-        // 连续运算符（非括号、非首字符减号）视为非法
-        if (Regex("[+\\-*/]{2,}").containsMatchIn(expression.replace("(-", "("))) return null
+            }) return null
         return try {
             val parser = Parser(expression)
             val value = parser.parseExpression()

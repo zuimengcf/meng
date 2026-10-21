@@ -177,6 +177,7 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
     }
 
     override fun onDetached() {
+        commonKeyActionListener.clearCalculator()
         currentKeyboard?.let {
             it.onDetach()
             it.keyActionListener = null

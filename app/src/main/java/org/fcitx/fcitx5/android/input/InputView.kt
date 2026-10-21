@@ -37,6 +37,7 @@ import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
 import androidx.core.view.updateLayoutParams
+import org.fcitx.fcitx5.android.core.CapabilityFlag
 import org.fcitx.fcitx5.android.core.CapabilityFlags
 import org.fcitx.fcitx5.android.core.FcitxEvent
 import org.fcitx.fcitx5.android.daemon.FcitxConnection
@@ -733,6 +734,11 @@ class InputView(
     }
 
     fun startInput(info: EditorInfo, capFlags: CapabilityFlags, restarting: Boolean = false) {
+        val editorFlags = CapabilityFlags.fromEditorInfo(info)
+        commonKeyActionListener.startCalculatorInput(
+            !capFlags.has(CapabilityFlag.Password) && !capFlags.has(CapabilityFlag.Sensitive) &&
+                !editorFlags.has(CapabilityFlag.Password) && !editorFlags.has(CapabilityFlag.Sensitive)
+        )
         broadcaster.onStartInput(info, capFlags)
         returnKeyDrawable.updateDrawableOnEditorInfo(info)
         if (focusChangeResetKeyboard || !restarting) {
@@ -781,12 +787,18 @@ class InputView(
         broadcaster.onSelectionUpdate(start, end)
     }
 
+    /** 只在服务确认是外部光标变化时失效，正常上屏的预测回调不清空表达式。 */
+    fun invalidateCalculator() = commonKeyActionListener.clearCalculator()
+
+    fun endCalculatorInput() = commonKeyActionListener.endCalculatorInput()
+
     @RequiresApi(Build.VERSION_CODES.R)
     fun handleInlineSuggestions(response: InlineSuggestionsResponse): Boolean {
         return kawaiiBar.handleInlineSuggestions(response)
     }
 
     override fun onDetachedFromWindow() {
+        commonKeyActionListener.endCalculatorInput()
         advancedPrefs.unregisterOnChangeListener(onKeyboardSizeChangeListener)
         keyboardPrefs.unregisterOnChangeListener(onKeyboardSizeChangeListener)
         // clear DynamicScope, implies that InputView should not be attached again after detached.

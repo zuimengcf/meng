@@ -35,6 +35,7 @@ import org.fcitx.fcitx5.android.data.stats.InputStatsManager
 import org.fcitx.fcitx5.android.data.stats.db.FreqWord
 import org.fcitx.fcitx5.android.data.stats.db.InputDailyStats
 import org.fcitx.fcitx5.android.data.stats.db.WordAssoc
+import org.fcitx.fcitx5.android.utils.Const
 import splitties.dimensions.dp
 import timber.log.Timber
 import java.time.LocalDate
@@ -65,6 +66,11 @@ class InputStatsFragment : Fragment() {
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val ctx = requireContext()
         val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(ctx.dp(16)) }
+        root.addView(TextView(ctx).apply {
+            text = "${getString(R.string.current_version)}：${Const.versionName}"
+            textSize = 14f
+            setPadding(0, 0, 0, ctx.dp(12))
+        })
         bodyViews = listOf(
             R.string.smart_stats_today, R.string.smart_stats_week,
             R.string.smart_stats_month, R.string.smart_stats_all

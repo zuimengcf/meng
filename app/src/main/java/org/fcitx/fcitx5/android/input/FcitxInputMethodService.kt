@@ -888,6 +888,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     }
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+        inputView?.endCalculatorInput()
         lastTypedCode = ""
         InputStatsManager.resetSession()
         // update selection as soon as possible
@@ -1045,6 +1046,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
             return // do nothing if prediction matches
         } else {
             // cursor update can't match any prediction: it's treated as a user input
+            inputView?.invalidateCalculator()
             selection.resetTo(newSelStart, newSelEnd)
             lastTypedCode = ""
             InputStatsManager.resetSession()
@@ -1224,6 +1226,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         Timber.d("onFinishInputView: finishingInput=$finishingInput")
+        inputView?.endCalculatorInput()
         lastTypedCode = ""
         InputStatsManager.resetSession()
         decorLocationUpdated = false
@@ -1242,6 +1245,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     override fun onFinishInput() {
         Timber.d("onFinishInput")
+        inputView?.endCalculatorInput()
         lastTypedCode = ""
         InputStatsManager.resetSession()
         postFcitxJob {

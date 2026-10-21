@@ -12,8 +12,8 @@ import org.fcitx.fcitx5.android.core.FcitxAPI
 import org.fcitx.fcitx5.android.daemon.launchOnReady
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.input.broadcast.PreeditEmptyStateComponent
-import org.fcitx.fcitx5.android.input.calculator.CalculatorEngine
 import org.fcitx.fcitx5.android.input.calculator.CalculatorEngineHolder
+import org.fcitx.fcitx5.android.input.calculator.CalculatorSession
 import org.fcitx.fcitx5.android.input.candidates.horizontal.HorizontalCandidateComponent
 import org.fcitx.fcitx5.android.input.dependency.context
 import org.fcitx.fcitx5.android.input.dependency.fcitx
@@ -68,34 +68,31 @@ class CommonKeyActionListener :
 
     /** 数字键盘计算器引擎（共享单例，与候选栏同一实例）。 */
     private val calculator = CalculatorEngineHolder.engine
+    private val calculatorSession = CalculatorSession(calculator)
 
-    /**
-     * 计算器按键处理：把数字键盘的 KP 按键喂给引擎并刷新候选栏。
-     * 返回 true 表示该按键属于计算器字符（数字/运算符/小数点/等号），
-     * 调用方应继续走正常上屏流程（方案 B：数字照常上屏）。
-     */
-    private fun handleCalculatorKey(action: SymAction): Boolean {
-        val ch = CalculatorEngine.charFromSym(action.sym.sym) ?: return false
-        calculator.handle(ch)
-        updateCalculatorCandidate()
-        return true
+    fun startCalculatorInput(allowed: Boolean) {
+        calculatorSession.startInput(allowed)
+        if (horizontalCandidate.calculatorShowing) horizontalCandidate.hideCalculatorCandidate()
+    }
+
+    fun endCalculatorInput() {
+        calculatorSession.endInput()
+        if (horizontalCandidate.calculatorShowing) horizontalCandidate.hideCalculatorCandidate()
     }
 
     /** 根据引擎活动状态刷新候选栏的计算器候选。 */
     private fun updateCalculatorCandidate() {
         if (calculator.isActive()) {
             horizontalCandidate.showCalculatorCandidate()
-        } else {
+        } else if (horizontalCandidate.calculatorShowing) {
             horizontalCandidate.hideCalculatorCandidate()
         }
     }
 
     /** 离开数字键盘时清空计算器态（切键盘/符号/emoji 时由 KeyboardWindow 调用）。 */
     fun clearCalculator() {
-        if (calculator.isActive() || horizontalCandidate.calculatorShowing) {
-            calculator.clear()
-            horizontalCandidate.hideCalculatorCandidate()
-        }
+        calculatorSession.clear()
+        if (horizontalCandidate.calculatorShowing) horizontalCandidate.hideCalculatorCandidate()
     }
 
     // there should be a new fcitx API for this
@@ -123,36 +120,18 @@ class CommonKeyActionListener :
 
     val listener by lazy {
         KeyActionListener { action, _ ->
+            // 粘贴、滑动选区、切输入法等也会打断连续输入，不可只清 SymAction。
+            if (action !is SymAction) clearCalculator()
             when (action) {
                 is FcitxKeyAction -> service.postFcitxJob {
                     sendKey(action.act, action.states.states, action.code)
                 }
                 is SymAction -> {
-                    // 数字键盘计算器：KP 按键喂给引擎（数字照常上屏）。
-                    val sym = action.sym.sym
-                    val backspace = sym == 0xff08
-                    if (backspace) {
-                        // 退格：计算器激活时同步删追踪串末尾；随后照常删除输入框
-                        if (calculator.isActive()) {
-                            calculator.handleDelete()
-                            updateCalculatorCandidate()
-                        }
-                        service.postFcitxJob {
-                            sendKey(action.sym, action.states)
-                        }
-                    } else if (handleCalculatorKey(action)) {
-                        service.postFcitxJob {
-                            sendKey(action.sym, action.states)
-                        }
-                    } else {
-                        // 非计算器字符键（如切键盘/空格/回车等）：清空计算器态
-                        if (calculator.isActive() || horizontalCandidate.calculatorShowing) {
-                            calculator.clear()
-                            horizontalCandidate.hideCalculatorCandidate()
-                        }
-                        service.postFcitxJob {
-                            sendKey(action.sym, action.states)
-                        }
+                    calculatorSession.handleSym(action.sym.sym)
+                    updateCalculatorCandidate()
+                    // 旁路追踪不消费按键，原有上屏行为保持不变。
+                    service.postFcitxJob {
+                        sendKey(action.sym, action.states)
                     }
                 }
                 is CommitAction -> service.postFcitxJob {
