@@ -5,6 +5,8 @@
 package org.fcitx.fcitx5.android.ui.main.settings.smart
 
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceScreen
 import androidx.preference.Preference
 import androidx.recyclerview.widget.SimpleItemAnimator
@@ -13,11 +15,15 @@ import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreferenceFragment
 import org.fcitx.fcitx5.android.data.smart.SmartInputApi
+import org.fcitx.fcitx5.android.data.smart.SmartInputBundle
 import org.fcitx.fcitx5.android.data.stats.InputStatsManager
 import org.fcitx.fcitx5.android.ui.main.settings.SettingsRoute
 import org.fcitx.fcitx5.android.utils.addPreference
 import org.fcitx.fcitx5.android.utils.navigateWithAnim
 import org.fcitx.fcitx5.android.utils.toast
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 「梦」智能输入设置页：智能统计 / 智能联想 / 智能纠错三组（由 Smart.createUi 渲染）。
@@ -25,6 +31,64 @@ import org.fcitx.fcitx5.android.utils.toast
  * - 跳转统计展示页（日/周/月/全部 + 字数 + TOP 常用词 + 连续性联想数据）。
  */
 class SmartSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance().smart) {
+
+    private val exportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null || !isAdded) return@registerForActivityResult
+        lifecycleScope.launch {
+            runCatching { SmartInputBundle.export(requireContext()) }
+                .mapCatching { json -> withContext(Dispatchers.IO) {
+                    requireContext().contentResolver.openOutputStream(uri)?.use {
+                        val bytes = json.toByteArray(Charsets.UTF_8)
+                        require(bytes.size <= SmartInputBundle.MAX_BYTES) { "backup is too large" }
+                        it.write(bytes)
+                    } ?: error("cannot open export destination")
+                } }
+                .onSuccess { requireContext().toast(R.string.smart_bundle_exported) }
+                .onFailure { requireContext().toast(R.string.smart_bundle_failed) }
+        }
+    }
+    private val importLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null || !isAdded) return@registerForActivityResult
+        lifecycleScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) {
+                requireContext().contentResolver.openInputStream(uri)?.use { input ->
+                    val limit = SmartInputBundle.MAX_BYTES
+                    val bytes = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        total += read
+                        require(total <= limit) { "backup is too large" }
+                        bytes.write(buffer, 0, read)
+                    }
+                    bytes.toString(Charsets.UTF_8.name())
+                } ?: error("cannot open import source")
+            } }.mapCatching { SmartInputBundle.validate(it) }
+            result.onSuccess { payload ->
+                val p = payload.preview
+                android.app.AlertDialog.Builder(requireContext())
+                    .setTitle(R.string.smart_bundle_import_preview)
+                    .setMessage(getString(R.string.smart_bundle_import_preview_body, p.formatVersion,
+                        p.configCount, p.correctionCount, p.learningCount, p.learningParams,
+                        p.manualRuleCount, p.enabledManualRuleCount,
+                        if (p.preservesManualRules) "旧版 v2 备份没有手动规则：保留现有手动规则。"
+                        else "以文件中的手动规则替换现有规则（含停用项）；空列表会清空手动规则。"))
+                    .setPositiveButton(android.R.string.ok) { _, _ ->
+                        lifecycleScope.launch {
+                            runCatching { SmartInputBundle.apply(requireContext(), payload) }
+                                .onSuccess { requireContext().toast(R.string.smart_bundle_imported) }
+                                .onFailure { requireContext().toast(R.string.smart_bundle_failed) }
+                        }
+                    }.setNegativeButton(android.R.string.cancel, null).show()
+            }.onFailure { requireContext().toast(R.string.smart_bundle_invalid) }
+        }
+    }
 
     private var suggestionLimitPreference: Preference? = null
     private val smart = AppPrefs.getInstance().smart
@@ -43,9 +107,24 @@ class SmartSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance().s
         // 必须在 createUi 之前设置：createUi 在 onCreatePreferences 里先于 onPreferenceUiCreated 调用。
         smart.statsGroupExtra = { category ->
             category.addPreference(
+                R.string.smart_bundle_export,
+                R.string.smart_bundle_export_hint,
+                onClick = { exportLauncher.launch("meng-smart-input.json") }
+            )
+            category.addPreference(
+                R.string.smart_bundle_import,
+                R.string.smart_bundle_import_hint,
+                onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
+            )
+            category.addPreference(
                 R.string.smart_stats_view,
                 R.string.smart_stats_view_hint,
                 onClick = { navigateWithAnim(SettingsRoute.InputStats) }
+            )
+            category.addPreference(
+                R.string.manual_correction_rules,
+                R.string.manual_correction_rules_hint,
+                onClick = { navigateWithAnim(SettingsRoute.ManualCorrectionRules) }
             )
             category.addPreference(
                 R.string.smart_stats_clear,
@@ -55,8 +134,11 @@ class SmartSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance().s
                         .setTitle(R.string.smart_stats_clear)
                         .setMessage(R.string.smart_stats_clear_confirm)
                         .setPositiveButton(android.R.string.ok) { _, _ ->
-                            InputStatsManager.clearAllAsync()
-                            requireContext().toast(R.string.smart_stats_cleared)
+                            lifecycleScope.launch {
+                                runCatching { InputStatsManager.clearStatsAndAssoc() }
+                                    .onSuccess { if (isAdded) requireContext().toast(R.string.smart_stats_cleared) }
+                                    .onFailure { if (isAdded) requireContext().toast("清空未完全完成，请刷新检查") }
+                            }
                         }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()

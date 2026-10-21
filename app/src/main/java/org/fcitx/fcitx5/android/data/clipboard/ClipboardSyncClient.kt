@@ -126,11 +126,17 @@ object ClipboardSyncClient {
         require(incoming.protocolVersion == ClipboardSyncCrypto.PROTOCOL_VERSION && incoming.deviceId.isNotBlank()) { "同步响应协议或设备标识无效" }
         require(incoming.deviceId != ClipboardOplog.deviceId) { "不能把本机当作其他同步设备" }
         ClipboardDelivery.confirm(body.receivedEntryIds.toSet().intersect(ClipboardDelivery.ids(outgoing)))
+        val outgoingVersions = outgoing.entries.associate { it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId) }
+        ClipboardDelivery.recordPeerReceipt(incoming.deviceId, outgoingVersions.filterKeys { it in body.receivedEntryIds })
         lastPingOk = System.currentTimeMillis(); onlineDeviceIds = body.onlineClientIds.toSet()
         val (applied, rawStats) = ClipboardSnapshotStore.mergeWithStats(incoming)
+        ClipboardDelivery.recordPeerReceipt(incoming.deviceId, incoming.entries.associate {
+            it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId)
+        })
         runCatching {
             requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest(
-                "ack", ClipboardOplog.deviceId, receivedEntryIds = ClipboardDelivery.ids(incoming).toList()))
+                "ack", ClipboardOplog.deviceId, receivedEntryIds = ClipboardDelivery.ids(incoming).toList(),
+                receivedEntryVersions = incoming.entries.associate { it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId) }))
         }.onFailure { if (it is CancellationException) throw it }
         // A delta does not echo matching rows; count matches from the complete authenticated inventory.
         val stats = rawStats.copy(mergedExisting = body.inventory?.entries?.keys?.count { id -> inventory.entries.containsKey(id) }

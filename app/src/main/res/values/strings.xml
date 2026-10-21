@@ -18,7 +18,7 @@
     <string name="smart_stats_view_hint">查看日 / 周 / 月 / 全部字数、最常用词与连续性联想数据</string>
     <string name="smart_stats_clear">清空统计</string>
     <string name="smart_stats_clear_hint">删除全部输入统计、常用词与联想记录</string>
-    <string name="smart_stats_clear_confirm">确定清空全部输入统计？此操作不可撤销。</string>
+    <string name="smart_stats_clear_confirm">确定清空日统计、常用词、会话与联想条目？不会删除规则/纠错学习集；此操作不可撤销。</string>
     <string name="smart_stats_cleared">统计已清空</string>
     <string name="smart_stats_empty">暂无数据</string>
     <string name="smart_stats_loading">正在读取统计…</string>
@@ -33,10 +33,18 @@
     <string name="smart_stats_week">本周</string>
     <string name="smart_stats_month">本月</string>
     <string name="smart_stats_all">全部</string>
+    <string name="smart_stats_commit_outcomes">已确认 %1$d · 未验证 %2$d · 被拒绝 %3$d（旧累计统计不计入成功率）</string>
+    <string name="smart_stats_search_limit">仅显示前 1000 个匹配结果</string>
     <string name="smart_stats_range_body">中文 %1$d 字 · 英文 %2$d 词 · 数字 %3$d · 标点 %4$d · 共 %5$d 字符</string>
     <string name="smart_stats_top_words">最常用词汇 TOP</string>
     <string name="smart_stats_assoc">连续性联想数据</string>
     <string name="smart_stats_assoc_body">已积累 %1$d 条「前一词 → 后一词」关联，供联想预测使用</string>
+    <string name="smart_stats_search_words">搜索常用词</string>
+    <string name="smart_stats_search_assoc">搜索联想条目（前词或后词）</string>
+    <string name="smart_stats_delete">删除</string>
+    <string name="smart_stats_delete_word_confirm">确定删除常用词“%1$s”？删除后不会因重启恢复。</string>
+    <string name="smart_stats_delete_assoc_confirm">确定删除联想“%1$s → %2$s”？删除后不会因重启恢复。</string>
+    <string name="smart_stats_clear_all">清空全部统计与联想</string>
     <string name="save">Save</string>
     <string name="input_methods">Input Methods</string>
     <string name="add_input_method">Add Input Method</string>

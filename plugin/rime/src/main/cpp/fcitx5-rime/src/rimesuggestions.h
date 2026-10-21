@@ -325,6 +325,18 @@ inline std::vector<std::string> mergeCandidateWords(const std::vector<std::strin
     return out;
 }
 
+// Persistent, explicitly enabled user rules are independent of learned heuristics,
+// candidate source selection and external-candidate TTL. They offer candidates, not auto-commits.
+inline std::vector<std::string> withManualCorrections(
+    const std::vector<SuggestionEntry> &manualEntries, std::string_view input,
+    const std::unordered_set<std::string> &existing,
+    const std::vector<std::string> &fallback, const SmartInputOptions &options) {
+    if (!options.correction || options.correction_limit <= 0) return {};
+    const auto manual = matchingExternalByKey(manualEntries, normalizeSuggestionCode(input),
+                                              existing, options.correction_limit);
+    return mergeCandidateWords(manual, fallback, options.correction_limit);
+}
+
 // Return the final one or two Han characters, only when the input ends in Han.
 // Invalid UTF-8, punctuation/space endings, and non-Han code points return {}.
 inline std::string extractSuggestionTail(std::string_view text) {

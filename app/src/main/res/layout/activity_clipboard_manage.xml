@@ -124,6 +124,32 @@
                 app:singleSelection="true"
                 app:selectionRequired="true" />
         </HorizontalScrollView>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp">
+            <EditText
+                android:id="@+id/clipboard_manage_search"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:hint="搜索正文或条目 ID"
+                android:inputType="text"
+                android:imeOptions="actionSearch"
+                android:singleLine="true"
+                android:importantForAutofill="no"
+                android:saveEnabled="false" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/clipboard_manage_tools"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:minHeight="48dp"
+                android:text="列表操作" />
+        </LinearLayout>
         <ProgressBar
             android:id="@+id/clipboard_sync_progress"
             style="?android:attr/progressBarStyleHorizontal"

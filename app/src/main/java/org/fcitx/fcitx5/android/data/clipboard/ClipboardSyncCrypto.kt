@@ -35,6 +35,7 @@ data class ClipboardSyncWireRequest(
     val packetJson: String? = null,
     val inventory: ClipboardSyncInventory? = null,
     val receivedEntryIds: List<String> = emptyList(),
+    val receivedEntryVersions: Map<String, String> = emptyMap(),
 )
 
 @Serializable

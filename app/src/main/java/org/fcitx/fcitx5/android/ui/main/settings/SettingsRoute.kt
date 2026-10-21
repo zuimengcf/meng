@@ -34,6 +34,7 @@ import org.fcitx.fcitx5.android.ui.main.settings.global.GlobalConfigFragment
 import org.fcitx.fcitx5.android.ui.main.settings.im.InputMethodConfigFragment
 import org.fcitx.fcitx5.android.ui.main.settings.im.InputMethodListFragment
 import org.fcitx.fcitx5.android.ui.main.settings.smart.InputStatsFragment
+import org.fcitx.fcitx5.android.ui.main.settings.smart.ManualCorrectionRulesFragment
 import org.fcitx.fcitx5.android.ui.main.settings.smart.SmartSettingsFragment
 import org.fcitx.fcitx5.android.ui.main.settings.theme.ThemeFragment
 import org.fcitx.fcitx5.android.utils.config.ConfigDescriptor
@@ -91,6 +92,9 @@ sealed class SettingsRoute : Parcelable {
 
     @Serializable
     data object InputStats : SettingsRoute()
+
+    @Serializable
+    data object ManualCorrectionRules : SettingsRoute()
 
 
     @Serializable
@@ -245,6 +249,9 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<InputStatsFragment, InputStats> {
                 label = ctx.getString(R.string.smart_stats)
+            }
+            fragment<ManualCorrectionRulesFragment, ManualCorrectionRules> {
+                label = ctx.getString(R.string.manual_correction_rules)
             }
             fragment<PluginFragment, Plugin> {
                 label = ctx.getString(R.string.plugins)

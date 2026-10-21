@@ -35,6 +35,11 @@ object ClipboardDelivery {
             ids.filter { it.isNotBlank() }.distinct().forEach { ClipboardManager.syncDao().markDelivered(it) }
         }
     }
+
+    /** Records an authenticated peer receipt, bound to exact entry versions. */
+    fun recordPeerReceipt(peerDeviceId: String, versions: Map<String, String>) {
+        ClipboardReceiptStore.record(peerDeviceId, versions)
+    }
 }
 
 object ClipboardDeletionPolicy {

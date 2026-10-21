@@ -43,6 +43,8 @@ object ClipboardSyncServer {
     private const val BODY_TIMEOUT_MS = 30_000
     private val online = ConcurrentHashMap<String, Long>()
     private val requestIds = ConcurrentHashMap<String, Long>()
+    private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
+    private val offeredDeliveries = ConcurrentHashMap<String, OfferedDelivery>()
     private val lock = Mutex()
     private val clients = Semaphore(8)
     private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -89,7 +91,7 @@ object ClipboardSyncServer {
         running.set(false); acceptJob?.cancel(); acceptJob = null
         runCatching { socket?.close() }; socket = null; serverPort = 0; password = ""
         activeSockets.forEach { runCatching { it.close() } }; activeSockets.clear()
-        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear()
+        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear(); offeredDeliveries.clear()
     }
 
     private suspend fun handle(client: Socket, onClientSynced: (Int) -> Unit) {
@@ -169,7 +171,14 @@ object ClipboardSyncServer {
         if (req.kind == "ack") {
             require(req.clientId != ClipboardOplog.deviceId) { "不能接受本机送达回执" }
             return ClipboardDelivery.withLock {
-                ClipboardDelivery.confirm(req.receivedEntryIds)
+                val offered = offeredDeliveries.remove(req.clientId)
+                if (offered != null) {
+                    ClipboardDelivery.confirm(req.receivedEntryIds.filter { it in offered.ids })
+                    ClipboardDelivery.recordPeerReceipt(req.clientId,
+                        req.receivedEntryVersions.filter { (id, version) ->
+                            id in req.receivedEntryIds && offered.versions[id] == version
+                        })
+                }
                 ClipboardSyncWireResponse(true, requestId, "ack")
             }
         }
@@ -179,11 +188,16 @@ object ClipboardSyncServer {
         require(packet.deviceId != ClipboardOplog.deviceId) { "不能将同步到本机当作另一台设备接收" }
         return ClipboardDelivery.withLock {
             val (applied, stats) = ClipboardSnapshotStore.mergeWithStats(packet)
+            ClipboardDelivery.recordPeerReceipt(packet.deviceId, packet.entries.associate {
+                it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId)
+            })
             ClipboardSyncNotifications.record(stats)
             if (applied > 0) onClientSynced(applied)
             val captured = ClipboardSnapshotStore.capture()
             val inventory = ClipboardSyncDelta.inventory(captured.packet)
             val outgoing = ClipboardSyncDelta.difference(captured.packet, req.inventory, inventory)
+            offeredDeliveries[req.clientId] = OfferedDelivery(ClipboardDelivery.ids(outgoing),
+                outgoing.entries.associate { it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId) })
             ClipboardDelivery.beginExposure(outgoing)
             ClipboardSyncWireResponse(true, requestId, "sync", captured.fingerprint, json.encodeToString(outgoing),
                 onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,

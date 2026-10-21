@@ -174,17 +174,16 @@ object ClipboardSnapshotStore {
                     return@forEach
                 }
                 val group = r.groupSyncId.takeIf { it.isNotBlank() }?.let { gd.getBySyncId(it) }
-                val path = if (r.deleted) null else if (r.type.startsWith("image/")) {
+                // Peer ordinary deletes retain this device's payload for seven-day recovery.
+                // Deleted bytes are never imported from the wire; force-delete is local-only.
+                val path = if (r.deleted) local?.imagePath?.takeIf {
+                    ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile
+                } else if (r.type.startsWith("image/")) {
                     if (!r.imageData.isNullOrBlank()) imageBase64ToFile(r.imageData, r.type) ?: error("图片写入失败，未确认同步完成")
                     else local?.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
                 } else local?.imagePath // Keep source for explicit undo/history; never send deleted image bytes.
-                if (r.deleted) {
-                    ClipboardOplog.stageDeletion(ClipboardOplog.Deletion(
-                        r.syncId, r.updatedAt, hard = false,
-                        imagePaths = (listOfNotNull(local?.imagePath) + historicalImagePaths[r.syncId].orEmpty()).distinct()))
-                }
-                ed.upsert(ClipboardEntry(id = local?.id ?: 0, text = if (r.deleted) "" else r.text,
-                    pinned = if (r.deleted) false else r.pinned, timestamp = r.timestamp,
+                ed.upsert(ClipboardEntry(id = local?.id ?: 0, text = if (r.deleted) local?.text.orEmpty() else r.text,
+                    pinned = if (r.deleted) local?.pinned == true else r.pinned, timestamp = r.timestamp,
                     type = r.type, deleted = r.deleted, sensitive = r.sensitive, imagePath = path,
                     groupId = group?.takeUnless { it.deleted }?.id ?: 0, groupSyncId = r.groupSyncId,
                     syncId = r.syncId, updatedAt = r.updatedAt, sortOrder = r.sortOrder, lastModifiedBy = r.deviceId,

@@ -63,8 +63,22 @@ interface InputStatsDao {
     @Query("SELECT * FROM ${FreqWord.TABLE_NAME} ORDER BY count DESC LIMIT :limit")
     suspend fun topWords(limit: Int): List<FreqWord>
 
+    /** TOP 词汇按最近活跃时间筛选；统计表只有聚合计数，不能伪造区间内计数。 */
+    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} WHERE updatedAt >= :fromMillis ORDER BY count DESC, updatedAt DESC LIMIT :limit")
+    suspend fun topWordsSince(fromMillis: Long, limit: Int): List<FreqWord>
+
+    /** Search the complete table; fromMillis is a recency filter, not a frequency window. */
+    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} WHERE instr(lower(word), lower(:query)) > 0 AND (:fromMillis = 0 OR updatedAt >= :fromMillis) ORDER BY count DESC, updatedAt DESC LIMIT :limit")
+    suspend fun searchWords(query: String, fromMillis: Long, limit: Int): List<FreqWord>
+
+    @Query("DELETE FROM ${FreqWord.TABLE_NAME} WHERE word = :word")
+    suspend fun deleteWord(word: String): Int
+
     @Query("SELECT COUNT(*) FROM ${FreqWord.TABLE_NAME}")
     suspend fun wordCount(): Long
+
+    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} ORDER BY count DESC, updatedAt DESC")
+    suspend fun allWords(): List<FreqWord>
 
     /* ===== 会话（预留） ===== */
 
@@ -112,11 +126,18 @@ interface InputStatsDao {
     @Query("SELECT * FROM ${WordAssoc.TABLE_NAME} ORDER BY count DESC, updatedAt DESC LIMIT :limit")
     suspend fun allAssoc(limit: Int): List<WordAssoc>
 
+    /** Search the complete association table without LIKE wildcard semantics. */
+    @Query("SELECT * FROM ${WordAssoc.TABLE_NAME} WHERE (instr(lower(prev), lower(:query)) > 0 OR instr(lower(next), lower(:query)) > 0) ORDER BY count DESC, updatedAt DESC LIMIT :limit")
+    suspend fun searchAssoc(query: String, limit: Int): List<WordAssoc>
+
     @Query("SELECT COUNT(*) FROM ${WordAssoc.TABLE_NAME}")
     suspend fun assocCount(): Long
 
     @Query("DELETE FROM ${WordAssoc.TABLE_NAME}")
     suspend fun deleteAllAssoc()
+
+    @Query("DELETE FROM ${WordAssoc.TABLE_NAME} WHERE `key` = :key")
+    suspend fun deleteAssoc(key: String): Int
 
     /* ===== 自学习错拼/习惯码映射（功能 3 纠错） ===== */
 
@@ -141,6 +162,9 @@ interface InputStatsDao {
 
     @Query("SELECT COUNT(*) FROM ${PinyinCorrect.TABLE_NAME}")
     suspend fun pinyinCorrectCount(): Long
+
+    @Query("SELECT * FROM ${PinyinCorrect.TABLE_NAME} ORDER BY count DESC, updatedAt DESC")
+    suspend fun allPinyinCorrect(): List<PinyinCorrect>
 
     /** 读取全部自学习习惯码映射（供导出联想词表；count 倒序）。 */
     @Query("""

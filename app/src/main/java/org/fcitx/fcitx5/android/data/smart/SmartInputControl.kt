@@ -16,11 +16,12 @@ object SmartInputControl {
 
     fun init(context: Context) {
         this.context = context.applicationContext
+        ManualCorrectionRuleStore.init(this.context)
         state = context.getSharedPreferences("smart_input_api", Context.MODE_PRIVATE)
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
     }
 
-    private fun effectiveConfig(): Map<String, String> = linkedMapOf<String, String>().apply {
+    internal fun effectiveConfig(): Map<String, String> = linkedMapOf<String, String>().apply {
         SmartInputContract.booleanPreferences.forEach { (key, pref) ->
             put(key, if (preferences.getBoolean(pref, key != "correction")) "1" else "0")
         }
@@ -30,21 +31,29 @@ object SmartInputControl {
 
     suspend fun getConfig(): Map<String, String> = InputStatsManager.serialized { effectiveConfig() }
 
-    suspend fun configure(patch: Map<String, String>): Map<String, String> {
+    internal fun persistConfigUnlocked(patch: Map<String, String>) {
         val validated = SmartInputContract.validatePatch(patch.toMap())
-        return InputStatsManager.serialized {
-            val boolEditor = preferences.edit()
-            val extraEditor = state.edit()
-            validated.forEach { (key, value) ->
-                val pref = SmartInputContract.booleanPreferences[key]
-                if (pref != null) boolEditor.putBoolean(pref, value == "1") else extraEditor.putString(key, value)
-            }
-            check(boolEditor.commit() && extraEditor.commit()) { "cannot persist configuration" }
+        val boolEditor = preferences.edit()
+        val extraEditor = state.edit()
+        validated.forEach { (key, value) ->
+            val pref = SmartInputContract.booleanPreferences[key]
+            if (pref != null) boolEditor.putBoolean(pref, value == "1") else extraEditor.putString(key, value)
+        }
+        check(boolEditor.commit()) { "cannot persist boolean configuration" }
+        check(extraEditor.commit()) { "cannot persist configuration" }
+    }
+    suspend fun configure(patch: Map<String, String>): Map<String, String> = InputStatsManager.serialized {
+        val old = effectiveConfig().filterKeys { it in SmartInputContract.configurableKeys }
+        try {
+            persistConfigUnlocked(patch)
             InputStatsManager.syncNativeFiles()
             effectiveConfig()
+        } catch (error: Throwable) {
+            runCatching { persistConfigUnlocked(old); InputStatsManager.syncNativeFiles() }
+                .exceptionOrNull()?.let(error::addSuppressed)
+            throw error
         }
     }
-
     /** Replace both caller-supplied tables without automatically changing source/enable switches. */
     suspend fun replaceCandidates(
         suggestions: List<SmartInputContract.Candidate>,

@@ -4,10 +4,14 @@
  */
 package org.fcitx.fcitx5.android.ui.main.settings.smart
 
+import android.app.AlertDialog
 import android.os.Bundle
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -24,184 +28,200 @@ import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.data.stats.InputStatsManager
 import org.fcitx.fcitx5.android.data.stats.db.FreqWord
 import org.fcitx.fcitx5.android.data.stats.db.InputDailyStats
+import org.fcitx.fcitx5.android.data.stats.db.WordAssoc
 import splitties.dimensions.dp
 import timber.log.Timber
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.TemporalAdjusters
+import java.time.DayOfWeek
 
-/**
- * 「梦」输入统计展示页：日 / 周 / 月 / 全部 + 字数统计 + TOP 常用词 + 连续性联想数据。
- */
+/** 「梦」输入统计展示页：日 / 周 / 月 / 全部 + 可管理的常用词和联想条目。 */
 class InputStatsFragment : Fragment() {
-
     private var bodyViews: List<TextView> = emptyList()
     private var refreshJob: Job? = null
     private var lastData: StatsData? = null
+    private var wordRange = WordRange.ALL
+    private var wordQuery = ""
+    private var assocQuery = ""
+    private var wordRows: LinearLayout? = null
+    private var assocRows: LinearLayout? = null
+    private var outcomeView: TextView? = null
+    private var wordLimitView: TextView? = null
+    private var assocLimitView: TextView? = null
 
-    override fun onCreateView(
-        inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
-    ): View {
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         val ctx = requireContext()
-        val root = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(ctx.dp(16))
-        }
-        // Build the six sections once. Loading must never blank or append to the page.
+        val root = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(ctx.dp(16)) }
         bodyViews = listOf(
             R.string.smart_stats_today, R.string.smart_stats_week,
-            R.string.smart_stats_month, R.string.smart_stats_all,
-            R.string.smart_stats_top_words, R.string.smart_stats_assoc
+            R.string.smart_stats_month, R.string.smart_stats_all
         ).map { title ->
             root.addView(TextView(ctx).apply {
-                setText(title)
-                setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
+                setText(title); setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
                 setPadding(0, ctx.dp(8), 0, ctx.dp(4))
             })
             TextView(ctx).apply {
-                setText(R.string.smart_stats_loading)
-                textSize = 14f
+                setText(R.string.smart_stats_loading); textSize = 14f
                 setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray))
-                setPadding(0, 0, 0, ctx.dp(12))
-                root.addView(this)
+                setPadding(0, 0, 0, ctx.dp(12)); root.addView(this)
             }
         }
+        outcomeView = TextView(ctx).apply {
+            setText(R.string.smart_stats_loading); textSize = 14f
+            setPadding(0, 0, 0, ctx.dp(12)); root.addView(this)
+        }
+        root.addView(TextView(ctx).apply {
+            setText(R.string.smart_stats_top_words)
+            setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
+            setPadding(0, ctx.dp(8), 0, ctx.dp(4))
+        })
+        root.addView(rangeBar(ctx))
+        root.addView(TextView(ctx).apply { text = "按最近活跃时间筛选；括号为累计次数，不是区间内次数。" })
+        root.addView(Button(ctx).apply {
+            text = "清空全部常用词"; setOnClickListener {
+                confirmScopedClear("清空全部常用词？忽略搜索和日期筛选，不影响日统计、联想和纠错学习。") { InputStatsManager.clearWords() }
+            }
+        })
+        root.addView(searchBox(ctx, R.string.smart_stats_search_words) { wordQuery = it; refresh() })
+        wordRows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
+        wordLimitView = TextView(ctx).apply { setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); root.addView(this) }
+        root.addView(TextView(ctx).apply {
+            setText(R.string.smart_stats_assoc)
+            setTextAppearance(androidx.appcompat.R.style.TextAppearance_AppCompat_Title)
+            setPadding(0, ctx.dp(16), 0, ctx.dp(4))
+        })
+        root.addView(Button(ctx).apply {
+            text = "清空全部学习联想"; setOnClickListener {
+                confirmScopedClear("清空全部学习联想？忽略搜索，不影响日统计、常用词或纠错学习；内置联想词表不在此删除。") { InputStatsManager.clearAssociations() }
+            }
+        })
+        root.addView(searchBox(ctx, R.string.smart_stats_search_assoc) { assocQuery = it; refresh() })
+        assocRows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
+        assocLimitView = TextView(ctx).apply { setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)); root.addView(this) }
+        root.addView(Button(ctx).apply {
+            setText(R.string.smart_stats_clear_all); setOnClickListener { confirmClearAll() }
+        })
         return ScrollView(ctx).apply { addView(root) }
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-        // Restore the previous snapshot immediately if this fragment's view was recreated.
-        lastData?.let(::render)
+    private fun rangeBar(ctx: android.content.Context): View = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        WordRange.values().forEach { range ->
+            addView(Button(ctx).apply {
+                setText(range.label)
+                setOnClickListener { wordRange = range; refresh() }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
     }
 
-    override fun onResume() {
-        super.onResume()
-        // onViewCreated + onResume used to launch two competing initial loads.
-        refresh()
+    private fun searchBox(ctx: android.content.Context, hint: Int, changed: (String) -> Unit): EditText = EditText(ctx).apply {
+        setHint(hint); inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true)
+        addTextChangedListener(SimpleTextWatcher { changed(it) })
     }
 
-    override fun onDestroyView() {
-        refreshJob?.cancel()
-        refreshJob = null
-        bodyViews = emptyList()
-        super.onDestroyView()
-    }
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) { super.onViewCreated(view, savedInstanceState); lastData?.let(::render) }
+    override fun onResume() { super.onResume(); refresh() }
+    override fun onDestroyView() { refreshJob?.cancel(); refreshJob = null; bodyViews = emptyList(); wordRows = null; assocRows = null; outcomeView = null; wordLimitView = null; assocLimitView = null; super.onDestroyView() }
 
     private fun refresh() {
         refreshJob?.cancel()
         refreshJob = viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val data = withContext(Dispatchers.IO) {
-                    StatsData(
-                        today = InputStatsManager.todayStats(),
-                        week = InputStatsManager.weekStats(),
-                        month = InputStatsManager.monthStats(),
-                        all = InputStatsManager.dailySummary(),
-                        topWords = InputStatsManager.topWords(30),
-                        assocCount = InputStatsManager.assocCount()
-                    )
+                    val wordQueryNow = wordQuery.trim()
+                    val assocQueryNow = assocQuery.trim()
+                    StatsData(InputStatsManager.todayStats(), InputStatsManager.weekStats(), InputStatsManager.monthStats(),
+                        InputStatsManager.dailySummary(),
+                        if (wordQueryNow.isEmpty()) InputStatsManager.topWordsSince(wordRange.fromMillis())
+                        else InputStatsManager.searchWords(wordQueryNow, wordRange.fromMillis()),
+                        if (assocQueryNow.isEmpty()) InputStatsManager.allAssoc(1000)
+                        else InputStatsManager.searchAssoc(assocQueryNow),
+                        InputStatsManager.commitOutcomeCounts(), wordQueryNow.isNotEmpty(), assocQueryNow.isNotEmpty())
                 }
-                lastData = data
-                render(data)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.w(e, "Failed to load input statistics")
-                // A failed refresh must not erase a previously displayed snapshot.
-                if (lastData == null) {
-                    bodyViews.forEach { it.setText(R.string.smart_stats_load_failed) }
-                }
-            }
+                lastData = data; render(data)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { Timber.w(e, "Failed to load input statistics"); if (lastData == null) bodyViews.forEach { it.setText(R.string.smart_stats_load_failed) } }
         }
     }
 
-    private data class StatsData(
-        val today: InputDailyStats?,
-        val week: List<InputDailyStats>,
-        val month: List<InputDailyStats>,
-        val all: List<InputDailyStats>,
-        val topWords: List<FreqWord>,
-        val assocCount: Long
-    ) {
-        private fun total(list: List<InputDailyStats>) = list.sumOf { it.totalChars }
-        private fun chinese(list: List<InputDailyStats>) = list.sumOf { it.chineseChars }
-        private fun english(list: List<InputDailyStats>) = list.sumOf { it.englishWords }
-        private fun digits(list: List<InputDailyStats>) = list.sumOf { it.digits }
-        private fun punct(list: List<InputDailyStats>) = list.sumOf { it.punctuation }
-
-        val weekTotal: Long get() = total(week)
-        val weekChinese: Long get() = chinese(week)
-        val weekEnglish: Long get() = english(week)
-        val weekDigits: Long get() = digits(week)
-        val weekPunct: Long get() = punct(week)
-
-        val monthTotal: Long get() = total(month)
-        val monthChinese: Long get() = chinese(month)
-        val monthEnglish: Long get() = english(month)
-        val monthDigits: Long get() = digits(month)
-        val monthPunct: Long get() = punct(month)
-
-        val allTotal: Long get() = total(all)
-        val allChinese: Long get() = chinese(all)
-        val allEnglish: Long get() = english(all)
-        val allDigits: Long get() = digits(all)
-        val allPunct: Long get() = punct(all)
+    private data class StatsData(val today: InputDailyStats?, val week: List<InputDailyStats>, val month: List<InputDailyStats>, val all: List<InputDailyStats>, val topWords: List<FreqWord>, val assocs: List<WordAssoc>, val outcomes: InputStatsManager.CommitOutcomeCounts, val wordSearch: Boolean, val assocSearch: Boolean) {
+        private fun total(x: List<InputDailyStats>) = x.sumOf { it.totalChars }
+        private fun chinese(x: List<InputDailyStats>) = x.sumOf { it.chineseChars }
+        private fun english(x: List<InputDailyStats>) = x.sumOf { it.englishWords }
+        private fun digits(x: List<InputDailyStats>) = x.sumOf { it.digits }
+        private fun punct(x: List<InputDailyStats>) = x.sumOf { it.punctuation }
+        val weekTotal get() = total(week); val weekChinese get() = chinese(week); val weekEnglish get() = english(week); val weekDigits get() = digits(week); val weekPunct get() = punct(week)
+        val monthTotal get() = total(month); val monthChinese get() = chinese(month); val monthEnglish get() = english(month); val monthDigits get() = digits(month); val monthPunct get() = punct(month)
+        val allTotal get() = total(all); val allChinese get() = chinese(all); val allEnglish get() = english(all); val allDigits get() = digits(all); val allPunct get() = punct(all)
     }
 
     private fun render(data: StatsData) {
-        val ctx = requireContext()
+        val ctx = requireContext(); val bodies = bodyViews.iterator()
+        fun section(text: String) { if (bodies.hasNext()) { val target = bodies.next(); if (target.text.toString() != text) target.text = text } }
+        section(data.today?.let { ctx.getString(R.string.smart_stats_today_body, it.chineseChars, it.englishWords, it.digits, it.punctuation, it.totalChars) } ?: ctx.getString(R.string.smart_stats_empty))
+        section(ctx.getString(R.string.smart_stats_range_body, data.weekChinese, data.weekEnglish, data.weekDigits, data.weekPunct, data.weekTotal))
+        section(ctx.getString(R.string.smart_stats_range_body, data.monthChinese, data.monthEnglish, data.monthDigits, data.monthPunct, data.monthTotal))
+        section(ctx.getString(R.string.smart_stats_range_body, data.allChinese, data.allEnglish, data.allDigits, data.allPunct, data.allTotal))
+        outcomeView?.text = ctx.getString(R.string.smart_stats_commit_outcomes, data.outcomes.confirmed, data.outcomes.unverified, data.outcomes.rejected)
+        renderRows(data)
+    }
 
-        val bodies = bodyViews.iterator()
-        fun section(body: String) {
-            val target = bodies.next()
-            // Avoid unnecessary text/layout updates on an unchanged resume refresh.
-            if (target.text.toString() != body) target.text = body
+    private fun renderRows(data: StatsData? = lastData) {
+        val ctx = context ?: return; val snapshot = data ?: return
+        wordRows?.removeAllViews(); assocRows?.removeAllViews()
+        val q = wordQuery.trim()
+        snapshot.topWords.filter { q.isEmpty() || it.word.contains(q, true) }.forEach { word ->
+            wordRows?.addView(managedRow(ctx, "${word.word}（${word.count}）") { confirmDelete(ctx.getString(R.string.smart_stats_delete_word_confirm, word.word)) { InputStatsManager.deleteWord(word.word) } })
         }
+        if (wordRows?.childCount == 0) wordRows?.addView(emptyText(ctx))
+        wordLimitView?.text = if (snapshot.wordSearch && snapshot.topWords.size >= 1000) ctx.getString(R.string.smart_stats_search_limit) else ""
+        val aq = assocQuery.trim()
+        snapshot.assocs.filter { aq.isEmpty() || "${it.prev} ${it.next}".contains(aq, true) }.forEach { assoc ->
+            assocRows?.addView(managedRow(ctx, "${assoc.prev} → ${assoc.next}（${assoc.count}）") { confirmDelete(ctx.getString(R.string.smart_stats_delete_assoc_confirm, assoc.prev, assoc.next)) { InputStatsManager.deleteAssoc(assoc.key) } })
+        }
+        if (assocRows?.childCount == 0) assocRows?.addView(emptyText(ctx))
+        assocLimitView?.text = if (snapshot.assocSearch && snapshot.assocs.size >= 1000) ctx.getString(R.string.smart_stats_search_limit) else ""
+    }
 
-        // 今日
-        val todayBody = if (data.today == null) ctx.getString(R.string.smart_stats_empty)
-        else ctx.getString(
-            R.string.smart_stats_today_body,
-            data.today.chineseChars, data.today.englishWords, data.today.digits,
-            data.today.punctuation, data.today.totalChars
-        )
-        section(todayBody)
-
-        // 本周
-        section(
-            ctx.getString(
-                R.string.smart_stats_range_body,
-                data.weekChinese, data.weekEnglish, data.weekDigits, data.weekPunct, data.weekTotal
-            )
-        )
-
-        // 本月
-        section(
-            ctx.getString(
-                R.string.smart_stats_range_body,
-                data.monthChinese, data.monthEnglish, data.monthDigits, data.monthPunct, data.monthTotal
-            )
-        )
-
-        // 全部
-        section(
-            ctx.getString(
-                R.string.smart_stats_range_body,
-                data.allChinese, data.allEnglish, data.allDigits, data.allPunct, data.allTotal
-            )
-        )
-
-        // TOP 常用词
-        if (data.topWords.isEmpty()) {
-            section(ctx.getString(R.string.smart_stats_empty))
-        } else {
-            val lines = data.topWords.withIndex().joinToString("\n") { (i, w) ->
-                "${i + 1}. ${w.word}（${w.count}）"
+    private fun managedRow(ctx: android.content.Context, label: String, delete: () -> Unit): View = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; setPadding(0, 0, 0, ctx.dp(4))
+        addView(TextView(ctx).apply { text = label; textSize = 15f }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(Button(ctx).apply { setText(R.string.smart_stats_delete); setOnClickListener { delete() } })
+    }
+    private fun emptyText(ctx: android.content.Context) = TextView(ctx).apply { setText(R.string.smart_stats_empty); setTextColor(ContextCompat.getColor(ctx, android.R.color.darker_gray)) }
+    private fun confirmDelete(message: String, action: suspend () -> Boolean) {
+        AlertDialog.Builder(requireContext()).setMessage(message).setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.smart_stats_delete) { _, _ ->
+            viewLifecycleOwner.lifecycleScope.launch {
+                val result = runCatching { withContext(Dispatchers.IO) { action() } }
+                if (result.isFailure) android.widget.Toast.makeText(requireContext(), "操作未完全完成，请检查列表后重试", android.widget.Toast.LENGTH_SHORT).show()
+                refresh()
             }
-            section(lines)
-        }
+        }.show()
+    }
+    private fun confirmScopedClear(message: String, action: suspend () -> Unit) {
+        AlertDialog.Builder(requireContext()).setMessage(message).setNegativeButton(android.R.string.cancel, null).setPositiveButton("清空") { _, _ ->
+            viewLifecycleOwner.lifecycleScope.launch {
+                val result = runCatching { withContext(Dispatchers.IO) { action() } }
+                if (result.isFailure) android.widget.Toast.makeText(requireContext(), "清空未完全完成，请刷新检查", android.widget.Toast.LENGTH_SHORT).show()
+                lastData = null; refresh()
+            }
+        }.show()
+    }
+    private fun confirmClearAll() {
+        confirmScopedClear(getString(R.string.smart_stats_clear_confirm)) { InputStatsManager.clearStatsAndAssoc() }
+    }
 
-        // 连续性联想数据（功能 2 预测的数据来源）
-        section(
-            ctx.getString(R.string.smart_stats_assoc_body, data.assocCount)
-        )
+    private enum class WordRange(val label: String) {
+        TODAY("本日"), WEEK("本周"), MONTH("本月"), ALL("全部");
+        fun fromMillis(): Long = when (this) {
+            TODAY -> LocalDate.now(); WEEK -> LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)); MONTH -> LocalDate.now().withDayOfMonth(1); ALL -> null
+        }?.atStartOfDay(ZoneId.systemDefault())?.toInstant()?.toEpochMilli() ?: 0L
+    }
+
+    private class SimpleTextWatcher(private val changed: (String) -> Unit) : android.text.TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { changed(s?.toString().orEmpty()) }
+        override fun afterTextChanged(s: android.text.Editable?) = Unit
     }
 }

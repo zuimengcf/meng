@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="smart_bundle_export">导出智能输入备份</string>
+    <string name="smart_bundle_export_hint">单个 JSON 包含持久手动纠错规则、学习样本和必要学习参数</string>
+    <string name="smart_bundle_import">导入智能输入备份</string>
+    <string name="smart_bundle_import_hint">先校验并预览，确认后安全替换现有配置和完整学习库</string>
+    <string name="smart_bundle_import_preview">导入预览</string>
+    <string name="smart_bundle_import_preview_body">格式版本：%1$d\n配置项：%2$d\n纠错映射：%3$d\n学习条目总数：%4$d\n配置参数：%5$d\n手动规则：%6$d（启用 %7$d）\n%8$s\n确认导入？配置、学习库和手动规则将在失败时一起回滚。</string>
+    <string name="smart_bundle_exported">智能输入备份已导出</string>
+    <string name="smart_bundle_imported">智能输入备份已导入</string>
+    <string name="smart_bundle_invalid">备份格式无效或版本不受支持，未修改数据</string>
+    <string name="smart_bundle_failed">智能输入备份操作失败，原有数据未被破坏</string>
+</resources>

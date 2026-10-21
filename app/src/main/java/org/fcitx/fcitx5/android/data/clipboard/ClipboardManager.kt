@@ -261,11 +261,55 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     private fun recoverableImage(path: String): Boolean =
         ClipboardPurge.isPrivateClipboardImage(path) && File(path).isFile
 
+    /** 高级管理列表：包含仍保留的删除墓碑；正文已清理的墓碑仍会返回。 */
+    suspend fun advancedEntries(): List<ClipboardEntry> = withSyncLock {
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
+        clbDao.getAllIncludingDeleted().sortedWith(
+            compareByDescending<ClipboardEntry> { it.pinned }
+                .thenByDescending { it.timestamp }
+                .thenByDescending { it.updatedAt }
+        )
+    }
+
+    /** lastModifiedBy is source/last-modifier only, never a receiving-peer acknowledgement. */
+    fun syncStatus(entry: ClipboardEntry): ClipboardSyncStatus {
+        val receiptDevices = ClipboardReceiptStore.getAll(entry.syncId, ClipboardReceiptVersion.token(entry.updatedAt, entry.lastModifiedBy.ifBlank { ClipboardOplog.deviceId }))
+        return when {
+        receiptDevices.isNotEmpty() -> ClipboardSyncStatus(
+            ClipboardSyncState.RECEIPT_CONFIRMED, peerReceiptConfirmed = true,
+            receiptDeviceId = receiptDevices.joinToString(","),
+            sourceOrLastModifiedDeviceId = entry.lastModifiedBy.takeIf { it.isNotBlank() },
+        )
+        !entry.hasBeenSynced && !entry.syncExposurePending -> ClipboardSyncStatus(
+            ClipboardSyncState.LOCAL_ONLY,
+            sourceOrLastModifiedDeviceId = entry.lastModifiedBy.takeIf { it.isNotBlank() },
+        )
+        entry.syncExposurePending -> ClipboardSyncStatus(
+            ClipboardSyncState.EXPOSURE_PENDING,
+            sourceOrLastModifiedDeviceId = entry.lastModifiedBy.takeIf { it.isNotBlank() },
+        )
+        else -> ClipboardSyncStatus(
+            if (receiptDevices.isNotEmpty()) ClipboardSyncState.RECEIPT_CONFIRMED
+            else ClipboardSyncState.SHARED_OR_LEGACY_UNKNOWN,
+            peerReceiptConfirmed = receiptDevices.isNotEmpty(),
+            receiptDeviceId = receiptDevices.joinToString(",").takeIf { it.isNotBlank() },
+            sourceOrLastModifiedDeviceId = entry.lastModifiedBy.takeIf { it.isNotBlank() },
+        )
+        }
+    }
+
+    /** Monotonic receipt-store revision for refreshing advanced status labels. */
+    fun receiptRevision(): Long = ClipboardReceiptStore.revision
+
     /** 显式恢复一个历史条目版本；恢复是新的本机版本，会正常进入同步。 */
     suspend fun restoreRevision(id: String): Boolean = withSyncLock {
         ClipboardPurge.purgeExpiredDeletedUnlocked()
-        val op = ClipboardOplog.readAll().firstOrNull { ClipboardOplog.revisionId(it) == id } ?: return@withSyncLock false
-        if (!ClipboardRevisionRecovery.canRestore(op, ::recoverableImage)) return@withSyncLock false
+        restoreRevisionUnlocked(id)
+    }
+
+    private suspend fun restoreRevisionUnlocked(id: String): Boolean {
+        val op = ClipboardOplog.readAll().firstOrNull { ClipboardOplog.revisionId(it) == id } ?: return false
+        if (!ClipboardRevisionRecovery.canRestore(op, ::recoverableImage)) return false
         op.group?.let { payload ->
             val old = clbGroupDao.getBySyncId(op.syncId)
             val now = nextMutationTime()
@@ -278,15 +322,15 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                 ClipboardOplog.append(ClipboardOplog.OP_GROUP_RENAME, stable,
                     group = ClipboardOplog.GroupOp(restored.name, restored.sortOrder), ts = now)
             }
-            return@withSyncLock true
+            return true
         }
-        val payload = op.entry ?: return@withSyncLock false
+        val payload = op.entry ?: return false
         val local = clbDao.getBySyncId(op.syncId) ?: ClipboardEntry(text = payload.text, syncId = op.syncId)
         val imagePath = if (payload.type.startsWith("image/")) {
             imageBase64ToFile(payload.imageData, payload.type)
                 ?: payload.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
                 ?: local.imagePath?.takeIf { ClipboardPurge.isPrivateClipboardImage(it) && File(it).isFile }
-                ?: return@withSyncLock false
+                ?: return false
         } else null
         val now = nextMutationTime()
         ClipboardOplog.withTransaction(clbDb) {
@@ -301,7 +345,51 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             ClipboardOplog.append(ClipboardOplog.OP_INSERT, local.syncId.ifEmpty { op.syncId },
                 payload.copy(deleted = false, imagePath = imagePath, imageData = null), ts = now)
         }
-        updateItemCount(); true
+        updateItemCount(); return true
+    }
+
+    /** 恢复删除条目。过期或正文/图片已清理的墓碑不可恢复。 */
+    suspend fun restoreDeleted(id: Int): Boolean = withSyncLock {
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
+        val row = clbDao.getAllIncludingDeleted().firstOrNull { it.id == id && it.deleted }
+            ?: return@withSyncLock false
+        val revision = ClipboardOplog.readAll().asReversed().firstOrNull {
+            it.syncId == row.syncId && ClipboardRevisionRecovery.canRestore(it, ::recoverableImage)
+        } ?: return@withSyncLock false
+        restoreRevisionUnlocked(ClipboardOplog.revisionId(revision))
+    }
+
+    /**
+     * 立即清除正文、私有图片及历史正文，但永久保留删除墓碑和删除操作传播。
+     * 这是不可逆操作：后续 restoreDeleted 必然返回 false。
+     */
+    suspend fun forceDelete(id: Int): Boolean = ClipboardDelivery.withLock {
+        withSyncLock {
+            val old = clbDao.getAllIncludingDeleted().firstOrNull { it.id == id }
+                ?: return@withSyncLock false
+            if (!ClipboardDeletionPolicy.needsTombstone(old.hasBeenSynced, old.syncExposurePending)) {
+                ClipboardOplog.withTransaction(clbDb) { deleteEntryUnlocked(old) }
+                if (lastEntry?.id == id) lastEntry = null
+                updateItemCount()
+                return@withSyncLock true
+            }
+            val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
+            val now = nextMutationTime()
+            val paths = (listOfNotNull(old.imagePath) + ClipboardOplog.imagePathsForSyncId(stable)).distinct()
+            ClipboardOplog.withTransaction(clbDb) {
+                val tombstone = old.copy(text = "", imagePath = null, pinned = false,
+                    syncId = stable, deleted = true, updatedAt = now,
+                    lastModifiedBy = ClipboardOplog.deviceId,
+                    hasBeenSynced = true, syncExposurePending = false)
+                clbDao.upsert(tombstone)
+                ClipboardOplog.append(ClipboardOplog.OP_DELETE, stable, entry = entryOp(tombstone, true), ts = now)
+                // Soft rewrite removes all historical payloads while retaining the blank DELETE op.
+                ClipboardOplog.stageDeletion(ClipboardOplog.Deletion(stable, now, hard = false, imagePaths = paths))
+            }
+            if (lastEntry?.id == id) lastEntry = null
+            updateItemCount()
+            true
+        }
     }
 
     /** 默认「图片」分组的展示名（复制的图片自动归入此组）。 */

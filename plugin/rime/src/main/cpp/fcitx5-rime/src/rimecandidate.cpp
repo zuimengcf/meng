@@ -50,6 +50,7 @@ static std::string correctionFile() {
         .string();
 }
 static std::string externalSuggestionFile() { return (fcitx::StandardPaths::global().userDirectory(fcitx::StandardPathsType::PkgData) / "rime" / "external-suggestion.dict").string(); }
+static std::string manualCorrectionFile() { return (fcitx::StandardPaths::global().userDirectory(fcitx::StandardPathsType::PkgData) / "rime" / "manual-correction.dict").string(); }
 static std::string externalCorrectionFile() { return (fcitx::StandardPaths::global().userDirectory(fcitx::StandardPathsType::PkgData) / "rime" / "external-correction.dict").string(); }
 static int64_t nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count(); }
 
@@ -237,6 +238,7 @@ void RimeCandidateList::appendCorrections() {
     }
     // Keep independent caches because each load() replaces its store contents.
     static thread_local SuggestionStore builtinStore;
+    static thread_local SuggestionStore manualStore;
     static thread_local SuggestionStore externalStore;
     std::unordered_set<std::string> existing;
     if (firstPage_) {
@@ -260,7 +262,9 @@ void RimeCandidateList::appendCorrections() {
     const auto &ext = externalStore.load(externalCorrectionFile());
     const auto builtin = flags.correction_source == CandidateSource::External ? std::vector<std::string>{} : matchingByCode(all, rawInput, existing, flags.correction_limit, CorrectionOptions{flags.habit, flags.neighbor, flags.fuzzy});
     const auto externalMatches = externalCandidatesActive(flags, nowMs()) && flags.correction_source != CandidateSource::Builtin ? matchingExternalByKey(ext, normalizeSuggestionCode(rawInput), existing, flags.correction_limit) : std::vector<std::string>{};
-    const auto matches = mergeCandidateWords(externalMatches, builtin, flags.correction_limit);
+    const auto fallback = mergeCandidateWords(externalMatches, builtin, flags.correction_limit);
+    const auto matches = withManualCorrections(manualStore.load(manualCorrectionFile()), rawInput,
+                                                existing, fallback, flags);
     for (const auto &word : matches) {
         correctionWords_.emplace_back(
             std::make_unique<RimeCorrectWord>(engine_, word, flags.correction_label));

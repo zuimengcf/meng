@@ -38,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.fcitx.fcitx5.android.R
+import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncState
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncClient
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncDiscovery
@@ -65,8 +66,14 @@ class ClipboardManageActivity : AppCompatActivity() {
     private var selectedGroup = 0 // 0=全部，-1=未分组，>0=分组 ID
     private var groupSignature = ""
     private var loadGeneration = 0
+    private var displayedGeneration = -1
     private var dragging = false
     private var syncing = false
+    private var advancedMode = false
+    private var advancedFilter = 0 // 0=有效条目，1=已删除，2=全部，3=未同步，4=已同步，5=可能送达/未知
+    private var searchQuery = ""
+    private val advancedGesture = ClipboardAdvancedGesture()
+    private var displayedEntries: List<ClipboardEntry> = emptyList()
     private var roomDialog: AlertDialog? = null
     private var roomDialogStatus: TextView? = null
     private var roomDialogMode = ""
@@ -82,7 +89,8 @@ class ClipboardManageActivity : AppCompatActivity() {
     private fun refreshEntriesIfChanged() {
         if (binding.clipboardManageList.scrollState != RecyclerView.SCROLL_STATE_IDLE) return
         scope.launch {
-            val fingerprint = withContext(Dispatchers.IO) { org.fcitx.fcitx5.android.data.clipboard.ClipboardSnapshotStore.fingerprint() }
+            val fingerprint = withContext(Dispatchers.IO) { org.fcitx.fcitx5.android.data.clipboard.ClipboardSnapshotStore.fingerprint() +
+                    ":" + ClipboardManager.receiptRevision() + if (advancedMode) ":" + ClipboardManager.advancedEntries().joinToString { "${it.id}:${it.hasBeenSynced}:${it.syncExposurePending}" } else "" }
             if (fingerprint != lastListFingerprint) {
                 lastListFingerprint = fingerprint
                 loadEntries()
@@ -126,22 +134,41 @@ class ClipboardManageActivity : AppCompatActivity() {
             windowInsets
         }
 
-        binding.clipboardManageTitle.text = "全屏剪切板"
+        advancedMode = savedInstanceState?.getBoolean("advancedMode") ?: false
+        advancedFilter = (savedInstanceState?.getInt("advancedFilter") ?: 0).coerceIn(0, 5)
+        searchQuery = savedInstanceState?.getString("clipboardSearch").orEmpty()
+        updateAdvancedTitle()
+        binding.clipboardManageTitle.setOnClickListener {
+            if (advancedGesture.tap(android.os.SystemClock.elapsedRealtime())) {
+                advancedMode = true
+                updateAdvancedTitle()
+                toast("已进入高级模式：可查看同步状态、删除标记及恢复操作")
+                loadEntries()
+            }
+        }
+        binding.clipboardManageSearch.setText(searchQuery)
+        binding.clipboardManageSearch.addTextChangedListener {
+            searchQuery = it?.toString().orEmpty().trim()
+            loadEntries()
+        }
+        binding.clipboardManageTools.setOnClickListener { showListTools() }
         binding.clipboardManageBack.setOnClickListener { finish() }
 
         adapter = ClipboardManageAdapter(
             this,
             AppPrefs.getInstance().clipboard.clipboardMaskSensitive.getValue(),
-            onClick = { entry -> onEntryClick(entry) },
+            onClick = { entry -> if (advancedMode || entry.deleted) showAdvancedEntry(entry) else onEntryClick(entry) },
             onShare = { entry -> shareEntry(entry) },
             onDelete = { entry -> confirmDelete(entry) },
             onMoveToGroup = { entry -> promptMoveToGroup(entry) },
             onStartDrag = { holder ->
-                if (sortMode == 2 && selectedGroup == 0) {
+                if (canDragEntries()) {
                     dragging = true
                     itemTouchHelper.startDrag(holder)
-                } else toast("请在「全部」中选择自定义排序后拖动")
-            }
+                } else toast("请退出高级模式、清除搜索，并在「全部」中选择自定义排序后拖动")
+            },
+            metadata = { entry -> if (advancedMode) entryMetadata(entry) else "" },
+            onDetails = { entry -> if (advancedMode) showAdvancedEntry(entry) }
         )
         binding.clipboardManageList.adapter = adapter
         binding.clipboardManageList.layoutManager =
@@ -153,7 +180,7 @@ class ClipboardManageActivity : AppCompatActivity() {
                 recyclerView: RecyclerView,
                 viewHolder: RecyclerView.ViewHolder
             ): Int {
-                return if (sortMode == 2 && selectedGroup == 0)
+                return if (canDragEntries())
                     makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) else 0
             }
 
@@ -227,7 +254,7 @@ class ClipboardManageActivity : AppCompatActivity() {
     }
 
     private fun refreshSyncUI() {
-        binding.clipboardManageTitle.text = "全屏剪切板"
+        updateAdvancedTitle()
         binding.clipboardManageSync.text = "房间同步"
         binding.clipboardRoomStatus.text = if (syncing) "正在同步…" else roomStatus()
         binding.clipboardRoomDetail.text = roomDetail()
@@ -475,6 +502,104 @@ class ClipboardManageActivity : AppCompatActivity() {
         }
     }
 
+    private val advancedFilterNames = arrayOf("有效条目", "已删除标记", "全部（含删除）", "未同步", "已同步", "可能送达/状态不明")
+
+    private fun updateAdvancedTitle() {
+        binding.clipboardManageTitle.text = if (advancedMode) "全屏剪贴板 · 高级" else "全屏剪贴板"
+    }
+
+    private fun canDragEntries() = sortMode == 2 && selectedGroup == 0 &&
+        searchQuery.isBlank() && !advancedMode
+
+    private fun matchesAdvancedFilter(entry: ClipboardEntry): Boolean = if (!advancedMode) !entry.deleted else when (advancedFilter) {
+        1 -> entry.deleted
+        2 -> true
+        3 -> !entry.deleted && !entry.hasBeenSynced && !entry.syncExposurePending
+        4 -> !entry.deleted && ClipboardManager.syncStatus(entry).state == ClipboardSyncState.RECEIPT_CONFIRMED
+        5 -> !entry.deleted && ClipboardManager.syncStatus(entry).state in setOf(
+            ClipboardSyncState.EXPOSURE_PENDING, ClipboardSyncState.SHARED_OR_LEGACY_UNKNOWN)
+        else -> !entry.deleted
+    }
+
+    private fun entryMetadata(entry: ClipboardEntry): String {
+        val status = ClipboardManager.syncStatus(entry)
+        val state = when (status.state) {
+            ClipboardSyncState.RECEIPT_CONFIRMED -> "已同步（当前版本有设备证据）"
+            ClipboardSyncState.EXPOSURE_PENDING -> "可能送达/状态不明"
+            ClipboardSyncState.SHARED_OR_LEGACY_UNKNOWN -> "共享或旧状态不明（按已同步保护）"
+            ClipboardSyncState.LOCAL_ONLY -> "未同步（确认未暴露）"
+        }
+        val device = status.sourceOrLastModifiedDeviceId ?: "未知"
+        val peers = status.receiptDeviceId ?: "无可验证记录（不推断旧设备）"
+        return "${if (entry.deleted) "已标记删除 · " else ""}$state\n确认持有当前版本的设备：$peers\n最后修改设备：$device（非接收确认）\n条目 ID：${entry.id} · ${entry.syncId}"
+    }
+
+    private fun showListTools() {
+        val labels = mutableListOf("删除当前搜索/筛选结果", "清空全部有效条目（含置顶、所有分组）")
+        if (advancedMode) labels += listOf("高级状态筛选", "退出高级模式")
+        AlertDialog.Builder(this).setTitle("列表操作").setItems(labels.toTypedArray()) { _, which ->
+            when (which) {
+                0 -> confirmClearEntries(false)
+                1 -> confirmClearEntries(true)
+                2 -> AlertDialog.Builder(this).setTitle("高级状态筛选")
+                    .setSingleChoiceItems(advancedFilterNames, advancedFilter) { dialog, index ->
+                        advancedFilter = index; dialog.dismiss(); loadEntries()
+                    }.setNegativeButton("取消", null).show()
+                3 -> { advancedMode = false; advancedFilter = 0; updateAdvancedTitle(); loadEntries() }
+            }
+        }.setNegativeButton("取消", null).show()
+    }
+
+    private fun confirmClearEntries(all: Boolean) {
+        if (!all && displayedGeneration != loadGeneration) { toast("列表正在刷新，请稍后重试"); return }
+        scope.launch {
+            val ids = if (all) withContext(Dispatchers.IO) { ClipboardManager.getAllByTimeDesc().map { it.id } }
+                else displayedEntries.filterNot { it.deleted }.map { it.id }
+            if (ids.isEmpty()) { toast("没有可删除的有效条目；删除标记不会移除"); return@launch }
+            AlertDialog.Builder(this@ClipboardManageActivity)
+                .setTitle(if (all) "清空全部 ${ids.size} 条？" else "删除当前结果 ${ids.size} 条？")
+                .setMessage((if (all) "忽略搜索和分组，包含置顶条目。" else "只删除此刻结果中的有效条目，不删除其他分组或搜索外条目。") +
+                    "\n\n确认从未同步的彻底删除；已同步、可能送达或状态不明的标记删除，可恢复 7 天；到期清正文图片但永久保留防复活标记。确认后新增的条目不受影响。")
+                .setPositiveButton("确认删除") { _, _ ->
+                    scope.launch {
+                        val result = runCatching { withContext(Dispatchers.IO) { ids.forEach { ClipboardManager.delete(it) } } }
+                        toast(if (result.isSuccess) "所选有效条目已删除" else "部分操作未完成，请刷新检查：${result.exceptionOrNull()?.message}")
+                        loadEntries()
+                    }
+                }.setNegativeButton("取消", null).show()
+        }
+    }
+
+    private fun showAdvancedEntry(entry: ClipboardEntry) {
+        val choices = if (entry.deleted) arrayOf("恢复（仅保留期内且正文仍存在）", "强制清除正文与图片（永久保留删除标记）")
+            else arrayOf("查看/编辑内容", "删除（按同步状态处理）", "强制清除正文与图片（同步过的永久留标记）")
+        AlertDialog.Builder(this).setTitle("条目 ${entry.id}")
+            .setMessage(entryMetadata(entry) + "\n\n已删除内容最多保留 7 天。恢复会产生新版本并同步；强制清除不可恢复，不承诺立即擦除离线设备上的副本。")
+            .setPositiveButton("操作") { _, _ ->
+                AlertDialog.Builder(this).setTitle("选择条目操作").setItems(choices) { _, which ->
+                    if (entry.deleted && which == 0) confirmAdvancedAction(entry, false)
+                    else if (!entry.deleted && which == 0) onEntryClick(entry)
+                    else if (!entry.deleted && which == 1) confirmDelete(entry)
+                    else confirmAdvancedAction(entry, true)
+                }.setNegativeButton("取消", null).show()
+            }.setNegativeButton("关闭", null).show()
+    }
+
+    private fun confirmAdvancedAction(entry: ClipboardEntry, force: Boolean) {
+        AlertDialog.Builder(this).setTitle(if (force) "不可恢复地清除正文？" else "恢复此条目？")
+            .setMessage(if (force) "立即清除本机正文、图片及对应历史内容。同步过或可能送达的条目仍永久保留并传播空删除标记，防止离线设备复活旧数据。其他离线设备需重新连接后处理。" else "仅限 7 天内且正文/图片仍存在的删除条目；恢复为新版本并正常同步。")
+            .setPositiveButton(if (force) "强制清除" else "恢复") { _, _ ->
+                scope.launch {
+                    val result = runCatching { withContext(Dispatchers.IO) {
+                        if (force) ClipboardManager.forceDelete(entry.id) else ClipboardManager.restoreDeleted(entry.id)
+                    } }
+                    toast(if (result.getOrDefault(false)) (if (force) "已清除正文；已共享条目的删除标记保留" else "已恢复，等待同步")
+                        else "未完成：${result.exceptionOrNull()?.message ?: "条目已变化、已过期或正文不存在"}")
+                    loadEntries()
+                }
+            }.setNegativeButton("取消", null).show()
+    }
+
     private fun loadEntries() {
         if (dragging) return
         val generation = ++loadGeneration
@@ -485,7 +610,18 @@ class ClipboardManageActivity : AppCompatActivity() {
             renderGroupFilters(groups)
             val filter = selectedGroup
             val entries = withContext(Dispatchers.IO) {
-                when (sortMode) {
+                if (advancedMode) ClipboardManager.advancedEntries().let { rows ->
+                    when (sortMode) {
+                        1 -> rows.sortedWith(compareByDescending<ClipboardEntry> { it.pinned }.thenByDescending { it.timestamp })
+                        2 -> rows.sortedByDescending { it.sortOrder }
+                        3 -> rows.sortedBy { it.timestamp }
+                        4 -> rows.sortedByDescending { it.updatedAt }
+                        5 -> rows.sortedBy { it.text }
+                        6 -> rows.sortedWith(compareByDescending<ClipboardEntry> { it.type.startsWith("image/") }.thenByDescending { it.timestamp })
+                        7 -> rows.sortedWith(compareBy<ClipboardEntry> { it.type.startsWith("image/") }.thenByDescending { it.timestamp })
+                        else -> rows.sortedByDescending { it.timestamp }
+                    }
+                } else when (sortMode) {
                     1 -> ClipboardManager.getAllSorted()       // 置顶优先
                     2 -> ClipboardManager.getAllBySortOrder()  // 自定义拖拽
                     3 -> ClipboardManager.getAllByTimeAsc()    // 最旧在上
@@ -497,17 +633,24 @@ class ClipboardManageActivity : AppCompatActivity() {
                 }
             }
             if (generation != loadGeneration || dragging) return@launch
-            val visible = entries.filter { selectedGroup == 0 ||
-                (selectedGroup == -1 && it.groupId == 0) || it.groupId == selectedGroup }
+            val visible = entries.filter { entry ->
+                (selectedGroup == 0 || (selectedGroup == -1 && entry.groupId == 0) || entry.groupId == selectedGroup) &&
+                    matchesAdvancedFilter(entry) && ClipboardEntrySearch.matches(searchQuery, entry.text, entry.id, entry.syncId)
+            }
+            displayedEntries = visible
+            displayedGeneration = generation
             adapter.submit(visible)
             val name = if (selectedGroup == 0) "全部" else if (selectedGroup == -1) "未分组"
                 else groups.firstOrNull { it.id == selectedGroup }?.name ?: "全部"
-            binding.clipboardListSummary.text = "$name · ${visible.size} 条"
+            binding.clipboardListSummary.text = "$name · ${visible.size} 条" +
+                (if (searchQuery.isNotBlank()) " · 搜索结果" else "") +
+                (if (advancedMode) " · ${advancedFilterNames[advancedFilter]}" else "")
             binding.clipboardManageSort.contentDescription = "排序：${sortName(sortMode)}"
             pagePrefs.edit().putInt("selectedGroup", selectedGroup).apply()
-            binding.clipboardManageEmpty.text = if (filter == 0) "暂无剪切板内容\n复制文字或图片后会显示在这里" else "这个分组还没有内容\n可通过条目上的分组按钮移入内容"
+            binding.clipboardManageEmpty.text = if (searchQuery.isNotBlank()) "没有匹配条目" else if (advancedMode) "此筛选下暂无条目" else if (filter == 0) "暂无剪切板内容\n复制文字或图片后会显示在这里" else "这个分组还没有内容\n可通过条目上的分组按钮移入内容"
             if (lastListFingerprint.isEmpty()) {
-                lastListFingerprint = withContext(Dispatchers.IO) { org.fcitx.fcitx5.android.data.clipboard.ClipboardSnapshotStore.fingerprint() }
+                lastListFingerprint = withContext(Dispatchers.IO) { org.fcitx.fcitx5.android.data.clipboard.ClipboardSnapshotStore.fingerprint() +
+                    ":" + ClipboardManager.receiptRevision() + if (advancedMode) ":" + ClipboardManager.advancedEntries().joinToString { "${it.id}:${it.hasBeenSynced}:${it.syncExposurePending}" } else "" }
             }
             binding.clipboardManageEmpty.visibility =
                 if (visible.isEmpty()) View.VISIBLE else View.GONE
@@ -535,7 +678,7 @@ class ClipboardManageActivity : AppCompatActivity() {
 
     /** Persist the entire unfiltered custom-order list only; filtered reordering is ambiguous. */
     private fun persistOrder() {
-        if (sortMode != 2 || selectedGroup != 0) return
+        if (!canDragEntries()) return
         val ids = (0 until adapter.itemCount).mapNotNull { adapter.entryAt(it)?.id }
         if (ids.isEmpty()) return
         scope.launch {
@@ -590,13 +733,15 @@ class ClipboardManageActivity : AppCompatActivity() {
 
     /** 删除确认弹窗；同步状态决定七天保留期，过期后仅留不可恢复的空墓碑。 */
     private fun confirmDelete(entry: ClipboardEntry) {
+        if (entry.deleted) { showAdvancedEntry(entry); return }
         AlertDialog.Builder(this)
             .setTitle(R.string.delete)
             .setMessage("从未同步的内容会彻底删除；已同步、可能已送达或旧状态不明的正文和图像保留 7 天可恢复，过期后仅留空墓碑且不能恢复。\n\n确定删除这条剪切板记录？")
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 scope.launch {
-                    withContext(Dispatchers.IO) { ClipboardManager.delete(entry.id) }
-                    showDeletedSnackbar()
+                    runCatching { withContext(Dispatchers.IO) { ClipboardManager.delete(entry.id) } }
+                        .onSuccess { showDeletedSnackbar() }
+                        .onFailure { toast("删除未完成：${it.message}") }
                     loadEntries()
                 }
             }
@@ -948,6 +1093,9 @@ class ClipboardManageActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putInt("selectedGroup", selectedGroup)
         outState.putInt("sortMode", sortMode)
+        outState.putBoolean("advancedMode", advancedMode)
+        outState.putInt("advancedFilter", advancedFilter)
+        outState.putString("clipboardSearch", searchQuery)
         super.onSaveInstanceState(outState)
     }
 

@@ -507,13 +507,22 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
         val code = inputCode
         lastTypedCode = ""
         val ic = currentInputConnection ?: return
-        // Never collect passwords or input from editors opting out of learning.
-        if (!capabilityFlags.has(CapabilityFlag.Password) &&
-            !capabilityFlags.has(CapabilityFlag.Sensitive) &&
-            !capabilityFlags.has(CapabilityFlag.NoSpellCheck) &&
-            !capabilityFlags.has(CapabilityFlag.Url) &&
-            !capabilityFlags.has(CapabilityFlag.Email)) {
-            InputStatsManager.record(text, code)
+        val privacyRestricted = capabilityFlags.has(CapabilityFlag.Password) ||
+            capabilityFlags.has(CapabilityFlag.Sensitive) ||
+            capabilityFlags.has(CapabilityFlag.NoSpellCheck) ||
+            capabilityFlags.has(CapabilityFlag.Url) ||
+            capabilityFlags.has(CapabilityFlag.Email)
+        // Do not even query privacy-restricted editors. A null cursor read is
+        // evidence only that verification is unavailable, never evidence of success.
+        val beforeCommit = if (privacyRestricted) null else
+            runCatching { ic.getTextBeforeCursor((text.length + 64).coerceAtMost(256), 0)?.toString() }.getOrNull()
+        fun recordOutcome(accepted: Boolean, finishComposing: Boolean = false) {
+            if (privacyRestricted) return
+            val after = runCatching { ic.getTextBeforeCursor((text.length + 64).coerceAtMost(256), 0)?.toString() }.getOrNull()
+            val outcome = org.fcitx.fcitx5.android.data.stats.CommitVerification.classify(
+                text, beforeCommit, after, finishComposing = finishComposing, accepted = accepted
+            )
+            InputStatsManager.recordOutcome(outcome, text, code)
         }
         // when composing text equals commit content, finish composing text as-is
         if (composing.isNotEmpty() && composingText.toString() == text) {
@@ -525,7 +534,8 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
                     selection.predict(target)
                     ic.setSelection(target, target)
                 }
-                ic.finishComposingText()
+                val accepted = ic.finishComposingText()
+                recordOutcome(accepted, finishComposing = true)
             }
             return
         }
@@ -535,14 +545,17 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
         resetComposingState()
         if (cursor == -1) {
             selection.predict(start + text.length)
-            ic.commitText(text, 1)
+            val accepted = ic.commitText(text, 1)
+            recordOutcome(accepted)
         } else {
             val target = start + cursor
             selection.predict(target)
+            var accepted = false
             ic.withBatchEdit {
-                commitText(text, 1)
+                accepted = commitText(text, 1)
                 setSelection(target, target)
             }
+            recordOutcome(accepted)
         }
     }
 

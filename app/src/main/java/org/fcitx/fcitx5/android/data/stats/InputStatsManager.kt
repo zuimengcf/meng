@@ -6,6 +6,7 @@ package org.fcitx.fcitx5.android.data.stats
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -37,11 +38,20 @@ import java.time.format.DateTimeFormatter
  */
 object InputStatsManager {
 
+    /** 真实本地学习库快照；不是 external-* 候选文件。 */
+    data class LearningSnapshot(
+        val daily: List<InputDailyStats>,
+        val words: List<FreqWord>,
+        val associations: List<WordAssoc>,
+        val corrections: List<PinyinCorrect>
+    )
+
     private val dateFormat: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE
 
     private lateinit var db: InputStatsDatabase
     private lateinit var dao: InputStatsDao
     private lateinit var appContext: Context
+    private lateinit var outcomePrefs: SharedPreferences
 
     private val serialDispatcher = Executors.newSingleThreadExecutor { r -> Thread(r, "meng-input-stats") }.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + serialDispatcher)
@@ -70,6 +80,7 @@ object InputStatsManager {
 
     @Volatile
     private var initialized = false
+    @Volatile private var pendingImportRecovery = false
 
     /** 由 Application 初始化一次。 */
     fun init(context: Context) {
@@ -92,15 +103,26 @@ object InputStatsManager {
             Timber.e(e, "meng_stats could not be opened; preserving database and native learning files")
             return
         }
+        outcomePrefs = appContext.getSharedPreferences(OUTCOME_PREFS, Context.MODE_PRIVATE)
         val prefs = PreferenceManager.getDefaultSharedPreferences(appContext)
         // SharedPreferences keeps listeners weakly; retain a strong object field.
         prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
-        enqueue { syncNativeFiles() }
+        enqueue {
+            try {
+                org.fcitx.fcitx5.android.data.smart.ManualCorrectionRuleStore.recoverPendingUnlocked()
+                org.fcitx.fcitx5.android.data.smart.SmartInputBundle.recoverPendingUnlocked(appContext)
+                syncNativeFiles()
+            } catch (error: Exception) {
+                // Never learn over a partially recovered import or publish an empty dictionary.
+                initialized = false
+                Timber.e(error, "smart-input import recovery failed; original journal retained")
+            }
+        }
     }
 
     /** 数据开关只控制是否新增学习；已有库和冷启动词表仍可导出。 */
     fun isEnabled(): Boolean =
-        initialized && org.fcitx.fcitx5.android.data.prefs.AppPrefs.getInstance().smart.statsEnabled.getValue()
+        initialized && !pendingImportRecovery && org.fcitx.fcitx5.android.data.prefs.AppPrefs.getInstance().smart.statsEnabled.getValue()
 
     /** 内部日期字符串 yyyy-MM-dd（取系统当前自然日）。 */
     private fun today(): String = LocalDate.now().format(dateFormat)
@@ -126,43 +148,54 @@ object InputStatsManager {
      * @param code 用户为产生本次上屏实际敲入的输入码（含纯首字母简拼/全拼），
      *             用于自学习「习惯码 → 上屏词」映射（功能 3 纠错依据之一）。
      */
-    fun record(text: String, code: String = "") {
-        val now = System.currentTimeMillis()
-        val date = today()
-        val (chinese, english, digits, punct, total) = analyze(text)
+    data class CommitOutcomeCounts(
+        val confirmed: Long = 0,
+        val unverified: Long = 0,
+        val rejected: Long = 0
+    )
+
+    /** Persist an evidence classification separately from the legacy learning DB. */
+    fun recordOutcome(outcome: CommitVerification.Outcome, text: String = "", code: String = "") {
+        if (outcome == CommitVerification.Outcome.NOT_RECORDED) return
         enqueue {
-            try {
-                updateLastEndWordForSuggest(text)
-                if (!isEnabled()) {
-                    lastEndWord = null
-                    lastEndAt = 0L
-                    return@enqueue
-                }
-                // 不存在则插入当日行，再累加（避免并发下插入/更新竞态）
-                val existed = dao.addDaily(date, chinese, english, digits, punct, total, now)
-                if (existed == 0) {
-                    dao.insertDaily(
-                        InputDailyStats(
-                            date = date,
-                            chineseChars = chinese,
-                            englishWords = english,
-                            digits = digits,
-                            punctuation = punct,
-                            totalChars = total,
-                            commitCount = 1,
-                            updatedAt = now
-                        )
-                    )
-                }
-                recordWords(text, code)
-                // 每笔学习后立即在同一串行队列导出，避免最后一笔滞留
-                syncNativeFiles(rimeUserDir())
-            } catch (e: Exception) {
-                Timber.w(e, "InputStatsManager.record failed")
+            if (!::outcomePrefs.isInitialized || !isEnabled()) return@enqueue
+            val key = when (outcome) {
+                CommitVerification.Outcome.CONFIRMED -> KEY_CONFIRMED
+                CommitVerification.Outcome.UNVERIFIED -> KEY_UNVERIFIED
+                CommitVerification.Outcome.REJECTED -> KEY_REJECTED
+                CommitVerification.Outcome.NOT_RECORDED -> return@enqueue
             }
+            outcomePrefs.edit().putLong(key, outcomePrefs.getLong(key, 0L) + 1L).apply()
+            if (outcome == CommitVerification.Outcome.CONFIRMED && text.isNotEmpty()) recordUnlocked(text, code)
         }
     }
 
+    suspend fun commitOutcomeCounts(): CommitOutcomeCounts = serialized {
+        if (!::outcomePrefs.isInitialized) CommitOutcomeCounts() else CommitOutcomeCounts(
+            outcomePrefs.getLong(KEY_CONFIRMED, 0L),
+            outcomePrefs.getLong(KEY_UNVERIFIED, 0L),
+            outcomePrefs.getLong(KEY_REJECTED, 0L)
+        )
+    }
+
+    fun record(text: String, code: String = "") { enqueue { recordUnlocked(text, code) } }
+
+    private suspend fun recordUnlocked(text: String, code: String) {
+        if (!isEnabled()) { lastEndWord = null; lastEndAt = 0L; return }
+        val now = System.currentTimeMillis()
+        val date = today()
+        val (chinese, english, digits, punct, total) = analyze(text)
+        try {
+            updateLastEndWordForSuggest(text)
+            db.withTransaction {
+                val existed = dao.addDaily(date, chinese, english, digits, punct, total, now)
+                if (existed == 0) dao.insertDaily(InputDailyStats(date, chinese, english, digits,
+                    punct, total, commitCount = 1, updatedAt = now))
+                recordWords(text, code)
+            }
+            syncNativeFiles(rimeUserDir())
+        } catch (error: Exception) { Timber.w(error, "InputStatsManager.record failed") }
+    }
     /**
      * 上一次上屏文本的最后一个词（跨上屏关联的起点）。
      * 用于把「上一次上屏尾词 → 本次上屏首词」的转移也记录下来，
@@ -333,20 +366,128 @@ object InputStatsManager {
 
     suspend fun topWords(limit: Int = 20): List<FreqWord> = if (initialized) dao.topWords(limit) else emptyList()
 
+    /** 按最近活跃时间筛选常用词；计数仍是数据库中的累计值，不冒充区间计数。 */
+    suspend fun topWordsSince(fromMillis: Long, limit: Int = 1000): List<FreqWord> =
+        if (initialized) dao.topWordsSince(fromMillis, limit) else emptyList()
+
+    /** Search all words; the date is a recent-activity filter, never an interval count. */
+    suspend fun searchWords(query: String, fromMillis: Long, limit: Int = 1000): List<FreqWord> =
+        if (initialized && query.isNotBlank()) dao.searchWords(query, fromMillis, limit) else emptyList()
+
     /** 按「最近上屏词」取联想候选（连续性关联），功能 2 预测的数据入口。 */
     suspend fun assocFor(prev: String, limit: Int = 10): List<WordAssoc> = if (initialized) dao.assocFor(prev, limit) else emptyList()
 
+    /** 读取联想条目全集（按热度），供管理页搜索；不用于虚报预测成功率。 */
+    suspend fun allAssoc(limit: Int = 1000): List<WordAssoc> = if (initialized) dao.allAssoc(limit) else emptyList()
+
+    suspend fun searchAssoc(query: String, limit: Int = 1000): List<WordAssoc> =
+        if (initialized && query.isNotBlank()) dao.searchAssoc(query, limit) else emptyList()
+
+    /** Called only on the learning serial queue; initialization failure is never an empty backup. */
+    internal suspend fun learningSnapshotUnlocked(): LearningSnapshot {
+        check(initialized) { "learning database is unavailable" }
+        return LearningSnapshot(dao.getAllDaily(), dao.allWords(), dao.allAssoc(Int.MAX_VALUE), dao.allPinyinCorrect())
+    }
+
+    internal fun markImportRecoveryPending() { pendingImportRecovery = true }
+    internal fun markImportRecoveryComplete() { pendingImportRecovery = false }
+    internal fun requireNoPendingRecoveryUnlocked() {
+        check(!pendingImportRecovery) { "finish pending import recovery before modifying smart-input data" }
+    }
+    internal fun requireReadyUnlocked() {
+        check(initialized) { "learning database or import recovery is unavailable" }
+        requireNoPendingRecoveryUnlocked()
+    }
+
+    internal suspend fun <T> learningTransactionUnlocked(block: suspend () -> T): T {
+        check(initialized) { "learning database is unavailable" }
+        return db.withTransaction { block() }
+    }
+
+    internal suspend fun replaceLearningSnapshotUnlocked(snapshot: LearningSnapshot) {
+        check(initialized) { "learning database is unavailable" }
+        dao.deleteAllDaily(); dao.deleteAllWords(); dao.deleteAllAssoc(); dao.deleteAllPinyinCorrect()
+        snapshot.daily.forEach { dao.insertDaily(it) }
+        snapshot.words.forEach { dao.insertWord(it) }
+        snapshot.associations.forEach { dao.insertAssoc(it) }
+        snapshot.corrections.forEach { dao.insertPinyinCorrect(it) }
+        lastEndWord = null; lastEndAt = 0L; lastEndWordForSuggest = null
+    }
+
+    suspend fun exportLearningSnapshot(): LearningSnapshot = serialized { learningSnapshotUnlocked() }
+
+    suspend fun replaceLearningSnapshot(snapshot: LearningSnapshot) = serialized {
+        requireReadyUnlocked()
+        try {
+            learningTransactionUnlocked { replaceLearningSnapshotUnlocked(snapshot); syncNativeFiles() }
+        } catch (error: Throwable) {
+            // The Room transaction has already restored all original tables.
+            runCatching { syncNativeFiles() }.exceptionOrNull()?.let(error::addSuppressed)
+            throw error
+        }
+    }
+
     suspend fun assocCount(): Long = if (initialized) dao.assocCount() else 0L
+
+    /** 删除一个常用词并持久化；会同步 native 词表，重启后不会复现。 */
+    suspend fun deleteWord(word: String): Boolean = serialized {
+        requireNoPendingRecoveryUnlocked()
+        if (!initialized) false else {
+            val deleted = dao.deleteWord(word) > 0
+            syncNativeFiles()
+            deleted
+        }
+    }
+
+    /** 删除一个 prev→next 联想关联并持久化；会同步 native 词表。 */
+    suspend fun deleteAssoc(key: String): Boolean = serialized {
+        requireNoPendingRecoveryUnlocked()
+        if (!initialized) false else {
+            val deleted = dao.deleteAssoc(key) > 0
+            syncNativeFiles()
+            deleted
+        }
+    }
+
+    suspend fun clearWords() = serialized {
+        requireReadyUnlocked()
+        db.withTransaction { dao.deleteAllWords() }
+        syncNativeFiles()
+    }
+
+    suspend fun clearAssociations() = serialized {
+        requireReadyUnlocked()
+        db.withTransaction { dao.deleteAllAssoc() }
+        lastEndWord = null; lastEndAt = 0L; lastEndWordForSuggest = null
+        syncNativeFiles()
+    }
 
     suspend fun clearAll() = serialized { clearAllInternal() }
 
+    /** 清空统计页管理的范围，不触碰拼音纠错/规则学习映射。 */
+    suspend fun clearStatsAndAssoc() = serialized {
+        requireNoPendingRecoveryUnlocked()
+        if (!initialized) return@serialized
+        dao.deleteAllDaily()
+        dao.deleteAllWords()
+        dao.deleteAllSessions()
+        dao.deleteAllAssoc()
+        if (::outcomePrefs.isInitialized) outcomePrefs.edit().clear().apply()
+        lastEndWord = null
+        lastEndAt = 0L
+        lastEndWordForSuggest = null
+        syncNativeFiles()
+    }
+
     private suspend fun clearAllInternal() {
+        requireNoPendingRecoveryUnlocked()
         if (!initialized) return
         dao.deleteAllDaily()
         dao.deleteAllWords()
         dao.deleteAllSessions()
         dao.deleteAllAssoc()
         dao.deleteAllPinyinCorrect()
+        if (::outcomePrefs.isInitialized) outcomePrefs.edit().clear().apply()
         lastEndWord = null
         lastEndAt = 0L
         lastEndWordForSuggest = null
@@ -369,6 +510,11 @@ object InputStatsManager {
         }
     }
 
+    private const val OUTCOME_PREFS = "input_commit_outcomes"
+    private const val KEY_CONFIRMED = "confirmed"
+    private const val KEY_UNVERIFIED = "unverified"
+    private const val KEY_REJECTED = "rejected"
+
     /* ===== native 词表导出 ===== */
     private const val SUGGESTION_FILE = "suggestion.dict"
     private const val CORRECTION_FILE = "correction.dict"
@@ -388,6 +534,9 @@ object InputStatsManager {
         // failed/unknown databases must never trigger an empty native export.
         if (!initialized || dir == null) return
         dir.mkdirs()
+        atomicWrite(java.io.File(dir, "manual-correction.dict"),
+            org.fcitx.fcitx5.android.data.smart.ManualCorrectionRuleContract.toNativeTsv(
+                org.fcitx.fcitx5.android.data.smart.ManualCorrectionRuleStore.snapshotUnlocked()))
         val assoc = dao.allAssoc(limit = 10000)
         val habits = dao.habitMappings(limit = 10000)
         val seedSuggestion = readSeed("suggestion.tsv")

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="manual_correction_rules">手动纠错规则</string>
+    <string name="manual_correction_rules_hint">长期保存明确的拼音输入码→纠正输出词映射；不属于学习集临时候选，不会自动上屏。</string>
+    <string name="manual_correction_rules_explanation">规则长期持久保存；主“拼音纠错”开关关闭时不生效。它不依赖学习开关、邻键/模糊/习惯开关或 external TTL。规则只在匹配时参与纠错，不自动替你提交上屏。</string>
+    <string name="manual_correction_add">添加规则</string>
+    <string name="manual_correction_edit">编辑规则</string>
+    <string name="manual_correction_search">搜索输入码或输出词</string>
+    <string name="manual_correction_input">拼音输入码（小写）</string>
+    <string name="manual_correction_output">纠正输出词</string>
+    <string name="manual_correction_priority_label">优先级（0–1000000）</string>
+    <string name="manual_correction_priority">优先级：%1$d</string>
+    <string name="manual_correction_enabled">启用</string>
+    <string name="manual_correction_count">共 %1$d 条规则</string>
+    <string name="manual_correction_empty">暂无手动纠错规则</string>
+    <string name="manual_correction_input_invalid">输入码必须是 1–64 个小写英文字母</string>
+    <string name="manual_correction_output_invalid">输出词不能为空、必须单行且 UTF-8 不超过 512 字节</string>
+    <string name="manual_correction_priority_invalid">优先级必须是 0–1000000 的整数</string>
+    <string name="manual_correction_duplicate">输入码已存在，请编辑已有规则</string>
+    <string name="manual_correction_delete">删除</string>
+    <string name="manual_correction_delete_confirm">确定删除规则“%1$s → %2$s”？</string>
+    <string name="manual_correction_load_failed">规则读取失败，请重新进入此页重试</string>
+    <string name="manual_correction_save_failed">规则保存失败，请检查后重试</string>
+    <string name="manual_correction_delete_failed">规则删除失败，请检查列表后重试</string>
+</resources>

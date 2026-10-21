@@ -29,6 +29,8 @@ class ClipboardManageAdapter(
     private val onDelete: (ClipboardEntry) -> Unit,
     private val onMoveToGroup: (ClipboardEntry) -> Unit,
     private val onStartDrag: (RecyclerView.ViewHolder) -> Unit,
+    private val metadata: (ClipboardEntry) -> String = { "" },
+    private val onDetails: (ClipboardEntry) -> Unit = {},
 ) : RecyclerView.Adapter<ClipboardManageAdapter.VH>() {
 
     private val items = mutableListOf<ClipboardEntry>()
@@ -80,7 +82,16 @@ class ClipboardManageAdapter(
                 entry.text, entry.sensitive && maskSensitive
             )
         }
-        holder.date.text = formatDateTime(entry.timestamp)
+        val detail = metadata(entry)
+        holder.date.text = formatDateTime(entry.timestamp) + if (detail.isBlank()) "" else "\n$detail"
+        if (entry.deleted && entry.text.isEmpty() && entry.imagePath == null) {
+            holder.text.text = "[正文已清除 · 防复活删除标记]"
+        }
+        holder.share.visibility = if (entry.deleted) View.GONE else View.VISIBLE
+        holder.folder.visibility = if (entry.deleted) View.GONE else View.VISIBLE
+        holder.drag.visibility = if (entry.deleted) View.GONE else View.VISIBLE
+        holder.delete.contentDescription = if (entry.deleted) "删除标记操作" else "删除条目"
+        holder.itemView.setOnLongClickListener { onDetails(entry); true }
         holder.pin.visibility = if (entry.pinned) View.VISIBLE else View.GONE
 
         holder.itemView.setOnClickListener { onClick(entry) }
