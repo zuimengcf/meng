@@ -64,11 +64,11 @@ interface InputStatsDao {
     suspend fun topWords(limit: Int): List<FreqWord>
 
     /** TOP 词汇按最近活跃时间筛选；统计表只有聚合计数，不能伪造区间内计数。 */
-    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} WHERE updatedAt >= :fromMillis ORDER BY count DESC, updatedAt DESC LIMIT :limit OFFSET :offset")
+    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} WHERE updatedAt >= :fromMillis ORDER BY count DESC, updatedAt DESC, word ASC LIMIT :limit OFFSET :offset")
     suspend fun topWordsSince(fromMillis: Long, limit: Int, offset: Int): List<FreqWord>
 
     /** Search the complete table; fromMillis is a recency filter, not a frequency window. */
-    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} WHERE instr(lower(word), lower(:query)) > 0 AND (:fromMillis = 0 OR updatedAt >= :fromMillis) ORDER BY count DESC, updatedAt DESC LIMIT :limit OFFSET :offset")
+    @Query("SELECT * FROM ${FreqWord.TABLE_NAME} WHERE instr(lower(word), lower(:query)) > 0 AND (:fromMillis = 0 OR updatedAt >= :fromMillis) ORDER BY count DESC, updatedAt DESC, word ASC LIMIT :limit OFFSET :offset")
     suspend fun searchWords(query: String, fromMillis: Long, limit: Int, offset: Int): List<FreqWord>
 
     @Query("DELETE FROM ${FreqWord.TABLE_NAME} WHERE word = :word")

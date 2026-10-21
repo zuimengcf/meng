@@ -41,6 +41,8 @@ android {
             proguardFile("proguard-rules.pro")
         }
         debug {
+            // .debug 后缀包名：与正式包（com.meng.ime）隔离并存，互不覆盖
+            applicationIdSuffix = ".debug"
             resValue("mipmap", "app_icon", "@mipmap/ic_launcher_debug")
             resValue("mipmap", "app_icon_round", "@mipmap/ic_launcher_round_debug")
             resValue("string", "app_name", "@string/app_name_debug")

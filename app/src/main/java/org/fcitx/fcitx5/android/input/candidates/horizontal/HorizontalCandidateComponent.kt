@@ -15,6 +15,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import org.fcitx.fcitx5.android.R
+import org.fcitx.fcitx5.android.core.CandidateWord
 import org.fcitx.fcitx5.android.core.FcitxEvent
 import org.fcitx.fcitx5.android.daemon.launchOnReady
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
@@ -22,6 +23,7 @@ import org.fcitx.fcitx5.android.input.bar.ExpandButtonStateMachine.BooleanKey.Ex
 import org.fcitx.fcitx5.android.input.bar.ExpandButtonStateMachine.TransitionEvent.ExpandedCandidatesUpdated
 import org.fcitx.fcitx5.android.input.bar.KawaiiBarComponent
 import org.fcitx.fcitx5.android.input.broadcast.InputBroadcastReceiver
+import org.fcitx.fcitx5.android.input.calculator.CalculatorEngineHolder
 import org.fcitx.fcitx5.android.input.candidates.CandidateViewHolder
 import org.fcitx.fcitx5.android.input.candidates.expanded.decoration.FlexboxVerticalDecoration
 import org.fcitx.fcitx5.android.input.candidates.horizontal.HorizontalCandidateMode.AlwaysFillWidth
@@ -30,6 +32,7 @@ import org.fcitx.fcitx5.android.input.candidates.horizontal.HorizontalCandidateM
 import org.fcitx.fcitx5.android.input.dependency.UniqueViewComponent
 import org.fcitx.fcitx5.android.input.dependency.context
 import org.fcitx.fcitx5.android.input.dependency.fcitx
+import org.fcitx.fcitx5.android.input.dependency.inputMethodService
 import org.fcitx.fcitx5.android.input.dependency.inputView
 import org.fcitx.fcitx5.android.input.dependency.theme
 import org.mechdancer.dependency.manager.must
@@ -42,8 +45,16 @@ class HorizontalCandidateComponent :
     private val context by manager.context()
     private val fcitx by manager.fcitx()
     private val theme by manager.theme()
+    private val service by manager.inputMethodService()
     private val inputView by manager.inputView()
     private val bar: KawaiiBarComponent by manager.must()
+
+    /** 数字键盘计算器引擎（共享单例，按键分发喂入）。 */
+    private val calculator = CalculatorEngineHolder.engine
+
+    /** 候选栏当前是否正在展示计算器候选。 */
+    var calculatorShowing = false
+        private set
 
     private val fillStyle by AppPrefs.getInstance().keyboard.horizontalCandidateStyle
     private val maxSpanCountPref by lazy {
@@ -93,7 +104,19 @@ class HorizontalCandidateComponent :
                     flexGrow = layoutFlexGrow
                 }
                 holder.itemView.setOnClickListener {
-                    fcitx.launchOnReady { it.select(holder.idx) }
+                    if (calculatorShowing) {
+                        // 计算器候选：候选栏显示 `算式=答案`，点选上屏答案并结束本次计算
+                        val text = calculator.result()
+                        if (text != null) {
+                            // 若用户尚未按 "="，则上屏 "=答案" 补全；否则直接上屏答案，避免重复等号
+                            val commit = if (calculator.expressionEndsWithEqual()) text else "=$text"
+                            service.commitText(commit)
+                            calculator.finish()
+                            hideCalculatorCandidate()
+                        }
+                    } else {
+                        fcitx.launchOnReady { it.select(holder.idx) }
+                    }
                 }
                 holder.itemView.setOnLongClickListener {
                     inputView.showCandidateActionMenu(holder.idx, holder.candidate.text, holder.ui.root)
@@ -167,6 +190,10 @@ class HorizontalCandidateComponent :
     }
 
     override fun onCandidateUpdate(data: FcitxEvent.CandidateListEvent.Data) {
+        // 计算器激活时，用计算器结果候选覆盖 fcitx 候选
+        if (calculatorShowing) {
+            return
+        }
         val candidates = data.candidates
         val total = data.total
         val maxSpanCount = maxSpanCountPref.getValue()
@@ -194,5 +221,39 @@ class HorizontalCandidateComponent :
         if (candidates.isEmpty()) {
             refreshExpanded(0)
         }
+    }
+
+    /**
+     * 显示计算器候选：候选栏展示 `算式=答案`（如 `3+3=6`），
+     * 点选时上屏的是答案（见 onBindViewHolder 点击逻辑）。
+     * 由按键分发（CommonKeyActionListener）在计算器激活时调用。
+     */
+    fun showCalculatorCandidate() {
+        calculatorShowing = true
+        val expr = calculator.expressionText()
+        val answer = calculator.result()
+        if (expr == null || answer == null) {
+            adapter.updateCandidates(emptyArray(), 0)
+            refreshExpanded(0)
+            // 尚无可展示式：恢复候选栏 Idle（隐藏）
+            bar.notifyCandidateEmpty()
+            return
+        }
+        // 展示 `算式=答案`（去掉可能已存在的末尾 `=`，避免重复）
+        val display = expr.removeSuffix("=") + "=" + answer
+        adapter.updateCandidates(arrayOf(CandidateWord("", display, "")), 1)
+        refreshExpanded(1)
+        // 强制候选栏显示 candidateUi（数字键盘无 fcitx 候选，需主动切 UI）
+        bar.notifyCandidateNonEmpty()
+    }
+
+    /** 隐藏计算器候选，恢复 fcitx 候选显示。 */
+    fun hideCalculatorCandidate() {
+        calculatorShowing = false
+        // 触发一次候选刷新，恢复正常 fcitx 候选
+        adapter.updateCandidates(emptyArray(), 0)
+        refreshExpanded(0)
+        // 恢复候选栏正常态
+        bar.notifyCandidateEmpty()
     }
 }

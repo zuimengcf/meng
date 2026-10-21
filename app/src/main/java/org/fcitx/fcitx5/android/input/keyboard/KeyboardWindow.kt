@@ -124,12 +124,20 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
                     lastSymbolType = target
                 }
                 if (target == currentKeyboardName) return@execute
+                // 离开数字键盘时清空计算器态
+                if (currentKeyboardName == NumberKeyboard.Name && target != NumberKeyboard.Name) {
+                    commonKeyActionListener.clearCalculator()
+                }
                 detachCurrentLayout()
                 attachLayout(target)
                 if (windowManager.isAttached(this)) {
                     notifyBarLayoutChanged()
                 }
             } else {
+                // 切到符号/emoji picker：也清空计算器态
+                if (currentKeyboardName == NumberKeyboard.Name) {
+                    commonKeyActionListener.clearCalculator()
+                }
                 if (remember) {
                     lastSymbolType = PickerWindow.Key.Symbol.name
                 }

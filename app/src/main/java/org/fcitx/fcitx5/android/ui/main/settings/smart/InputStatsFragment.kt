@@ -185,37 +185,51 @@ class InputStatsFragment : Fragment() {
     override fun onResume() { super.onResume(); refresh() }
     override fun onDestroyView() { refreshJob?.cancel(); refreshJob = null; bodyViews = emptyList(); wordRows = null; assocRows = null; outcomeView = null; wordLimitView = null; assocLimitView = null; wordLoadMoreView = null; super.onDestroyView() }
 
-    private fun refresh() {
+    private fun refresh(appendWords: Boolean = false) {
         refreshJob?.cancel()
+        // Capture UI state before switching dispatchers. Only completed loads advance the offset.
+        val wordQueryNow = wordQuery.trim()
+        val assocQueryNow = assocQuery.trim()
+        val fromMillis = wordRange.fromMillis()
+        val pageSize = wordPageSize
+        val previousWords = if (appendWords) lastData?.topWords.orEmpty() else emptyList()
+        val offset = previousWords.size
+        val limit = if (appendWords) pageSize else maxOf(pageSize, wordLoaded)
+        val searchAssoc = assocSearched && assocQueryNow.isNotEmpty()
+        wordLoadMoreView?.isEnabled = false
         refreshJob = viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val data = withContext(Dispatchers.IO) {
-                    val wordQueryNow = wordQuery.trim()
-                    val assocQueryNow = assocQuery.trim()
-                    // 常用词分页懒加载：只取当前已加载的条目数。
-                    val words = if (wordQueryNow.isEmpty()) InputStatsManager.topWordsSince(wordRange.fromMillis(), wordPageSize, wordLoaded)
-                        else InputStatsManager.searchWords(wordQueryNow, wordRange.fromMillis(), wordPageSize, wordLoaded)
+                    // Fetch one extra row to distinguish a full last page from a page with more data.
+                    val words = if (wordQueryNow.isEmpty()) InputStatsManager.topWordsSince(fromMillis, limit + 1, offset)
+                        else InputStatsManager.searchWords(wordQueryNow, fromMillis, limit + 1, offset)
                     StatsData(InputStatsManager.todayStats(), InputStatsManager.weekStats(), InputStatsManager.monthStats(),
                         InputStatsManager.dailySummary(),
-                        words,
+                        previousWords + words.take(limit),
                         // 联想仅搜索时加载，最多 pageSize 条；未搜索时为空列表。
-                        if (assocSearched && assocQueryNow.isNotEmpty()) InputStatsManager.searchAssoc(assocQueryNow, wordPageSize) else emptyList(),
-                        InputStatsManager.commitOutcomeCounts(), wordQueryNow.isNotEmpty(), assocSearched && assocQueryNow.isNotEmpty())
+                        if (searchAssoc) InputStatsManager.searchAssoc(assocQueryNow, pageSize) else emptyList(),
+                        InputStatsManager.commitOutcomeCounts(), wordQueryNow.isNotEmpty(), searchAssoc,
+                        words.size > limit)
                 }
+                wordLoaded = data.topWords.size
+                wordLoadMoreView?.isEnabled = true
                 lastData = data; render(data)
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { Timber.w(e, "Failed to load input statistics"); if (lastData == null) bodyViews.forEach { it.setText(R.string.smart_stats_load_failed) } }
+            catch (e: Exception) {
+                wordLoadMoreView?.isEnabled = true
+                Timber.w(e, "Failed to load input statistics")
+                if (lastData == null) bodyViews.forEach { it.setText(R.string.smart_stats_load_failed) }
+            }
         }
     }
 
     /** 点击「加载更多」追加下一页常用词。 */
     private fun loadMoreWords() {
-        val q = wordQuery.trim()
-        wordLoaded += wordPageSize
-        refresh()
+        if (refreshJob?.isActive == true || wordLoaded == 0 || lastData?.hasMoreWords != true) return
+        refresh(appendWords = true)
     }
 
-    private data class StatsData(val today: InputDailyStats?, val week: List<InputDailyStats>, val month: List<InputDailyStats>, val all: List<InputDailyStats>, val topWords: List<FreqWord>, val assocs: List<WordAssoc>, val outcomes: InputStatsManager.CommitOutcomeCounts, val wordSearch: Boolean, val assocSearch: Boolean) {
+    private data class StatsData(val today: InputDailyStats?, val week: List<InputDailyStats>, val month: List<InputDailyStats>, val all: List<InputDailyStats>, val topWords: List<FreqWord>, val assocs: List<WordAssoc>, val outcomes: InputStatsManager.CommitOutcomeCounts, val wordSearch: Boolean, val assocSearch: Boolean, val hasMoreWords: Boolean) {
         private fun total(x: List<InputDailyStats>) = x.sumOf { it.totalChars }
         private fun chinese(x: List<InputDailyStats>) = x.sumOf { it.chineseChars }
         private fun english(x: List<InputDailyStats>) = x.sumOf { it.englishWords }
@@ -245,9 +259,8 @@ class InputStatsFragment : Fragment() {
             wordRows?.addView(managedRow(ctx, "${word.word}（${word.count}）") { confirmDelete(ctx.getString(R.string.smart_stats_delete_word_confirm, word.word)) { InputStatsManager.deleteWord(word.word) } })
         }
         if (wordRows?.childCount == 0) wordRows?.addView(emptyText(ctx))
-        // 分页：若本次恰好取满一页，提示可继续加载更多；否则隐藏。
-        val hasMore = snapshot.topWords.size >= wordPageSize
-        wordLoadMoreView?.visibility = if (hasMore) View.VISIBLE else View.GONE
+        // 是否还有下一页以本次查询的额外一条为准，不以累计显示条数判断。
+        wordLoadMoreView?.visibility = if (snapshot.hasMoreWords) View.VISIBLE else View.GONE
         val aq = assocQuery.trim()
         snapshot.assocs.filter { aq.isEmpty() || "${it.prev} ${it.next}".contains(aq, true) }.forEach { assoc ->
             assocRows?.addView(managedRow(ctx, "${assoc.prev} → ${assoc.next}（${assoc.count}）") { confirmDelete(ctx.getString(R.string.smart_stats_delete_assoc_confirm, assoc.prev, assoc.next)) { InputStatsManager.deleteAssoc(assoc.key) } })
@@ -265,8 +278,13 @@ class InputStatsFragment : Fragment() {
     private fun confirmDelete(message: String, action: suspend () -> Boolean) {
         AlertDialog.Builder(requireContext()).setMessage(message).setNegativeButton(android.R.string.cancel, null).setPositiveButton(R.string.smart_stats_delete) { _, _ ->
             viewLifecycleOwner.lifecycleScope.launch {
+                refreshJob?.cancel()
+                wordLoadMoreView?.isEnabled = false
                 val result = runCatching { withContext(Dispatchers.IO) { action() } }
+                result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
                 if (result.isFailure) android.widget.Toast.makeText(requireContext(), "操作未完全完成，请检查列表后重试", android.widget.Toast.LENGTH_SHORT).show()
+                // Deletion shifts database offsets: restart at the first page, even after partial failure.
+                wordLoaded = 0
                 refresh()
             }
         }.show()
@@ -296,8 +314,12 @@ class InputStatsFragment : Fragment() {
     }
     private fun doClear(action: suspend () -> Unit) {
         viewLifecycleOwner.lifecycleScope.launch {
+            refreshJob?.cancel()
+            wordLoadMoreView?.isEnabled = false
             val result = runCatching { withContext(Dispatchers.IO) { action() } }
+            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             if (result.isFailure) Toast.makeText(requireContext(), "清空未完全完成，请刷新检查", Toast.LENGTH_SHORT).show()
+            wordLoaded = 0
             lastData = null; refresh()
         }
     }

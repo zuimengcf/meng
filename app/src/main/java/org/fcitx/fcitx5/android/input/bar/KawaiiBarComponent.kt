@@ -460,7 +460,25 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
         barStateMachine.push(PreeditUpdated, PreeditEmpty to empty)
     }
 
+    /** 计算器候选激活时对候选栏 UI 的加锁标志：加锁期间状态机不得切换 displayedChild。 */
+    private var candidateUiLockedByCalculator = false
+
+    /** 计算器候选显示时调用：直接切到 candidateUi（index1）并加锁，防止状态机切走。 */
+    fun notifyCandidateNonEmpty() {
+        candidateUiLockedByCalculator = true
+        if (view.displayedChild != 1) view.displayedChild = 1
+    }
+
+    /** 计算器候选隐藏时调用：解锁并恢复候选栏正常态。 */
+    fun notifyCandidateEmpty() {
+        candidateUiLockedByCalculator = false
+        // 触发状态机重新求值，由 fcitx 候选/preedit 状态决定最终 UI
+        barStateMachine.push(CandidatesUpdated, CandidateEmpty to true)
+    }
+
     override fun onCandidateUpdate(data: CandidateListEvent.Data) {
+        // 计算器激活期间屏蔽 fcitx 候选事件，避免打回 Idle（隐藏）状态
+        if (candidateUiLockedByCalculator) return
         barStateMachine.push(CandidatesUpdated, CandidateEmpty to data.candidates.isEmpty())
     }
 
