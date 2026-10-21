@@ -175,6 +175,11 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         itemCount = clbDao.itemCount()
     }
 
+    internal suspend fun clearLastEntryAndRefreshCount() {
+        lastEntry = null
+        updateItemCount()
+    }
+
     private val onUpdateListeners = WeakHashSet<OnClipboardUpdateListener>()
 
     var transformer: ((String) -> String)? = null
@@ -493,7 +498,7 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     /** Unexposed local rows are erased; shared/uncertain rows retain recoverable content for seven days. */
-    private suspend fun deleteEntryUnlocked(old: ClipboardEntry, now: Long = nextMutationTime()) {
+    internal suspend fun deleteEntryUnlocked(old: ClipboardEntry, now: Long = nextMutationTime()) {
         val stable = old.syncId.ifEmpty { ClipboardOplog.newSyncId() }
         val tombstone = ClipboardDeletionPolicy.retainedDeletion(old, stable, now, ClipboardOplog.deviceId)
         if (tombstone != null) {

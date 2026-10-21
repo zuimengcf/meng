@@ -36,6 +36,17 @@ object ClipboardDelivery {
         }
     }
 
+    suspend fun confirmVersions(received: Collection<String>, versions: Map<String, String>) = ClipboardManager.withSyncLock {
+        ClipboardManager.syncDatabase().withTransaction {
+            val dao = ClipboardManager.syncDao()
+            received.filter { it.isNotBlank() }.distinct().forEach { id ->
+                val row = dao.getBySyncId(id) ?: return@forEach
+                val current = ClipboardReceiptVersion.token(row.updatedAt, row.lastModifiedBy.ifBlank { ClipboardOplog.deviceId })
+                if (versions[id] == current) dao.markDelivered(id)
+            }
+        }
+    }
+
     /** Records an authenticated peer receipt, bound to exact entry versions. */
     fun recordPeerReceipt(peerDeviceId: String, versions: Map<String, String>) {
         ClipboardReceiptStore.record(peerDeviceId, versions)

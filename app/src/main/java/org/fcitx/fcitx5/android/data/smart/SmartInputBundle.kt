@@ -163,7 +163,7 @@ object SmartInputBundle {
 
     private fun row(e: JsonElement, kind: String): Any = when (kind) {
         "daily" -> { val o = e.jsonObject; requireKeys(o, setOf("date","chinese_chars","english_words","digits","punctuation","total_chars","commit_count","updated_at"), kind); InputDailyStats(o.req("date"), o.nonNegative("chinese_chars"), o.nonNegative("english_words"), o.nonNegative("digits"), o.nonNegative("punctuation"), o.nonNegative("total_chars"), o.nonNegative("commit_count"), o.nonNegative("updated_at")) }
-        "words" -> { val o = e.jsonObject; requireKeys(o, setOf("word","count","updated_at"), kind); FreqWord(o.req("word").also { require(it.isNotEmpty() && it.length <= 512 && safe(it)) }, o.nonNegative("count"), o.nonNegative("updated_at")) }
+        "words" -> { val o = e.jsonObject; requireKeys(o, setOf("word","count","updated_at"), kind); FreqWord(o.req("word").also { require(it.isNotEmpty() && safe(it)) }, o.nonNegative("count"), o.nonNegative("updated_at")) }
         "associations" -> { val o = e.jsonObject; requireKeys(o, setOf("key","prev","next","count","updated_at"), kind); val p=o.req("prev"); val n=o.req("next"); require(o.req("key") == WordAssoc.key(p,n)); WordAssoc(o.req("key"), p,n,o.nonNegative("count"),o.nonNegative("updated_at")) }
         else -> { val o = e.jsonObject; requireKeys(o, setOf("key","wrong","correct","type","count","updated_at"), kind); val w=o.req("wrong"); val c=o.req("correct"); val t=o.int("type"); require(t in 1..3); require(o.req("key") == PinyinCorrect.key(w,t,c) || o.req("key") == PinyinCorrect.key(w,t)); PinyinCorrect(o.req("key"),w,c,t,o.nonNegative("count"),o.nonNegative("updated_at")) }
     }
@@ -175,7 +175,7 @@ object SmartInputBundle {
         require(s.associations.map { it.key }.toSet().size == s.associations.size) { "duplicate association key" }
         require(s.corrections.map { it.key }.toSet().size == s.corrections.size) { "duplicate correction key" }
         s.daily.forEach { require(runCatching { java.time.LocalDate.parse(it.date) }.isSuccess && it.chineseChars >= 0 && it.englishWords >= 0 && it.digits >= 0 && it.punctuation >= 0 && it.totalChars >= 0 && it.commitCount >= 0 && it.updatedAt >= 0) }
-        s.words.forEach { require(it.word.isNotEmpty() && it.word.length <= 512 && safe(it.word) && it.count >= 0 && it.updatedAt >= 0) }
+        s.words.forEach { require(it.word.isNotEmpty() && safe(it.word) && it.count >= 0 && it.updatedAt >= 0) }
         s.associations.forEach { require(it.key == WordAssoc.key(it.prev,it.next) && safe(it.prev) && safe(it.next) && it.count >= 0 && it.updatedAt >= 0) }
         s.corrections.forEach { require((it.key == PinyinCorrect.key(it.wrong,it.type,it.correct) || it.key == PinyinCorrect.key(it.wrong,it.type)) && it.type in 1..3 && safe(it.wrong) && safe(it.correct) && it.count >= 0 && it.updatedAt >= 0) }
     }

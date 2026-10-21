@@ -38,7 +38,7 @@ object ClipboardSnapshotStore {
     }
 
     suspend fun fingerprint(): String = ClipboardManager.withSyncLock { fingerprintUnlocked() }
-    private suspend fun fingerprintUnlocked(): String {
+    internal suspend fun fingerprintUnlocked(): String {
         val md = MessageDigest.getInstance("SHA-256")
         fun add(value: String) {
             val bytes = value.toByteArray(Charsets.UTF_8)
@@ -64,7 +64,13 @@ object ClipboardSnapshotStore {
         metadataSnapshotUnlocked()
     }
 
-    private suspend fun metadataSnapshotUnlocked(): ClipboardSyncPacket =
+    suspend fun metadataCapture(): Capture = ClipboardManager.withSyncLock {
+        ClipboardPurge.purgeExpiredDeletedUnlocked()
+        val packet = metadataSnapshotUnlocked()
+        Capture(packet, fingerprintUnlocked())
+    }
+
+    internal suspend fun metadataSnapshotUnlocked(): ClipboardSyncPacket =
         ClipboardOplog.withTransaction(ClipboardManager.syncDatabase()) {
             val groups = ClipboardManager.syncGroupDao().getAllIncludingAll()
             val byId = groups.associateBy { it.id }

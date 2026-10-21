@@ -17,15 +17,17 @@ internal object BackupValidation {
 
     fun fullBackupComponents(root: File, formatVersion: Int, declared: List<String>?): List<String> {
         val legacy = listOf("shared_prefs", "databases", "external", "recently_used")
-        val known = legacy + listOf("clipboard_images", "clipboard_oplog")
-        require(formatVersion in 1..2) { "不支持的完整备份格式：$formatVersion" }
+        val version2 = legacy + listOf("clipboard_images", "clipboard_oplog")
+        val version3 = version2 + "manual_corrections"
+        val known = when (formatVersion) { 2 -> version2; 3 -> version3; else -> legacy }
+        require(formatVersion in 1..3) { "不支持的完整备份格式：$formatVersion" }
         val components = if (formatVersion == 1) {
             require(declared == null || declared.toSet() == legacy.toSet()) { "旧版完整备份组件声明不完整" }
             legacy.take(3).forEach { name -> require(File(root, name).isDirectory) { "完整备份缺少 $name；剪贴板专用备份请使用“导入剪切板”" } }
             File(root, "recently_used").apply { require(isDirectory || mkdirs()) { "无法准备最近使用记录目录" } }
             legacy
         } else {
-            require(declared != null && declared.size == known.size && declared.toSet() == known.toSet()) { "新版完整备份必须包含全部设置、数据库、图片和同步历史组件" }
+            require(declared != null && declared.size == known.size && declared.toSet() == known.toSet()) { "新版完整备份必须包含全部设置、数据库、图片、同步历史和手动纠错规则组件" }
             declared
         }
         require(components.distinct().size == components.size) { "备份组件重复" }
@@ -36,6 +38,16 @@ internal object BackupValidation {
             require(if (name == "clipboard_oplog") file.isFile else file.isDirectory) { "备份组件缺失或类型错误：$name" }
         }
         return components
+    }
+
+    fun manualRulesFile(root: File): File {
+        val directory = File(root, "manual_corrections")
+        require(directory.isDirectory) { "完整备份缺少手动纠错规则目录" }
+        val entries = directory.listFiles()?.toList() ?: error("无法读取手动纠错规则目录")
+        require(entries.size == 1 && entries.single().isFile && entries.single().name == "manual-corrections.json") {
+            "手动纠错规则目录包含未知文件"
+        }
+        return entries.single()
     }
 
     /** 凭据通过 UserDataManager 的可移植表示导出，不再从设置备份中排除。 */

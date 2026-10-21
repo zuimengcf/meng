@@ -19,6 +19,14 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 
+data class ClipboardFullTransferPreview(
+    val localFingerprint: String,
+    val remoteFingerprint: String,
+    val local: ClipboardSyncSnapshotSummary,
+    val remote: ClipboardSyncSnapshotSummary,
+    val remoteDeviceId: String,
+)
+
 /** 加密协议 v2 客户端；心跳不携带快照，摘要改变才交换真实快照。 */
 object ClipboardSyncClient {
     private val json = Json { ignoreUnknownKeys = true }
@@ -161,6 +169,92 @@ object ClipboardSyncClient {
         }
     }
 
+    suspend fun previewFullTransfer(baseUrl: String = currentRoom, password: String = currentPassword): ClipboardFullTransferPreview = requestLock.withLock {
+        require(password.isNotEmpty()) { "房间密码不能为空" }
+        val local = ClipboardSnapshotStore.metadataCapture()
+        val body = requestAt(normalizeBaseUrl(baseUrl), password,
+            ClipboardSyncWireRequest("full_preview", ClipboardOplog.deviceId))
+        require(body.statusHash.isNotBlank() && body.summary != null && body.deviceId.isNotBlank()) {
+            "主机未返回可用的全量覆盖预览"
+        }
+        require(body.deviceId != ClipboardOplog.deviceId) { "不能把本机当作远端覆盖目标" }
+        ClipboardFullTransferPreview(local.fingerprint, body.statusHash,
+            ClipboardSyncSnapshotSummary.from(local.packet), body.summary, body.deviceId)
+    }
+
+    /** The client collection replaces the host collection, then adopts the host's tombstones. */
+    suspend fun uploadFullSnapshot(preview: ClipboardFullTransferPreview, baseUrl: String = currentRoom,
+        password: String = currentPassword): ClipboardSyncStats = requestLock.withLock {
+        require(password.isNotEmpty()) { "房间密码不能为空" }
+        val startGeneration = generation
+        ClipboardDelivery.withSendFence { releaseFence ->
+            val captured = ClipboardSnapshotStore.capture()
+            require(captured.fingerprint == preview.localFingerprint) { "本机剪贴板在预览后有变化，请重新预览" }
+            val outgoing = captured.packet
+            val versions = outgoing.entries.associate { it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId) }
+            val response = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest(
+                "full_upload", ClipboardOplog.deviceId, statusHash = preview.remoteFingerprint,
+                packetJson = json.encodeToString(outgoing), expectedFingerprint = preview.remoteFingerprint), releaseFence)
+            if (startGeneration != generation) throw CancellationException("房间已切换或退出")
+            val remote = json.decodeFromString<ClipboardSyncPacket>(response.packetJson ?: error("主机未返回覆盖后的快照"))
+            require(remote.deviceId == preview.remoteDeviceId) { "主机设备标识已变化，请重新预览" }
+            require(response.summary != null && response.deviceId == preview.remoteDeviceId) { "主机未返回完整覆盖回执" }
+            ClipboardDelivery.confirmVersions(response.receivedEntryIds, versions)
+            ClipboardDelivery.recordPeerReceipt(response.deviceId,
+                response.receivedEntryVersions.filterKeys { it in ClipboardDelivery.ids(remote) })
+            val (_, stats) = ClipboardSnapshotStore.mergeWithStats(remote)
+            ClipboardSyncNotifications.record(stats)
+            runCatching { requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest(
+                "ack", ClipboardOplog.deviceId, receivedEntryIds = ClipboardDelivery.ids(remote).toList(),
+                receivedEntryVersions = response.receivedEntryVersions)) }.onFailure { if (it is CancellationException) throw it }
+            lastSyncSummary = stats
+            lastPingOk = System.currentTimeMillis()
+            onlineDeviceIds = response.onlineClientIds.toSet()
+            peerInventory = null
+            lastSyncError = null
+            lastUploadedLocalFingerprint = ClipboardSnapshotStore.fingerprint()
+            lastSeenServerFingerprint = response.statusHash
+            stats
+        }
+    }
+
+    /** The authenticated host snapshot replaces this client's collection exactly, except safe tombstones. */
+    suspend fun downloadFullSnapshot(preview: ClipboardFullTransferPreview, baseUrl: String = currentRoom,
+        password: String = currentPassword): ClipboardSyncStats = requestLock.withLock {
+        require(password.isNotEmpty()) { "房间密码不能为空" }
+        val startGeneration = generation
+        ClipboardDelivery.withSendFence { releaseFence ->
+            val local = ClipboardSnapshotStore.metadataCapture()
+            require(local.fingerprint == preview.localFingerprint) { "本机剪贴板在预览后有变化，请重新预览" }
+            val response = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest(
+                "full_download", ClipboardOplog.deviceId, statusHash = preview.localFingerprint,
+                expectedFingerprint = preview.remoteFingerprint), releaseFence)
+            if (startGeneration != generation) throw CancellationException("房间已切换或退出")
+            val incoming = json.decodeFromString<ClipboardSyncPacket>(response.packetJson ?: error("主机未返回完整快照"))
+            require(incoming.deviceId == preview.remoteDeviceId) { "主机设备标识已变化，请重新预览" }
+            require(response.statusHash == preview.remoteFingerprint) { "主机内容在预览后有变化，请重新预览" }
+            require(response.summary != null && response.deviceId == preview.remoteDeviceId) { "主机未返回完整覆盖回执" }
+            ClipboardManualRestore.overwrite(incoming, preview.localFingerprint)
+            ClipboardDelivery.recordPeerReceipt(incoming.deviceId, incoming.entries.associate {
+                it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId)
+            })
+            runCatching { requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest(
+                "ack", ClipboardOplog.deviceId, receivedEntryIds = ClipboardDelivery.ids(incoming).toList(),
+                receivedEntryVersions = response.receivedEntryVersions)) }.onFailure { if (it is CancellationException) throw it }
+            val stats = ClipboardSyncSummary.summarize(local.packet, incoming,
+                ClipboardSnapshotStore.metadataCapture().packet)
+            ClipboardSyncNotifications.record(stats)
+            lastSyncSummary = stats
+            lastPingOk = System.currentTimeMillis()
+            onlineDeviceIds = response.onlineClientIds.toSet()
+            peerInventory = null
+            lastSyncError = null
+            lastUploadedLocalFingerprint = ClipboardSnapshotStore.fingerprint()
+            lastSeenServerFingerprint = response.statusHash
+            stats
+        }
+    }
+
     private suspend fun requestAt(baseUrl: String, password: String, req: ClipboardSyncWireRequest, afterExposure: (() -> Unit)? = null): ClipboardSyncWireResponse = withContext(Dispatchers.IO) {
         require(password.isNotEmpty()) { "房间密码不能为空" }; require(req.clientId.isNotBlank()) { "client ID不能为空" }
         val id = ClipboardSyncCrypto.requestId()
@@ -179,7 +273,7 @@ object ClipboardSyncClient {
         }
         try {
             val output = conn.outputStream
-            if (req.kind == "sync" && !req.packetJson.isNullOrBlank()) {
+            if (req.kind in setOf("sync", "full_upload") && !req.packetJson.isNullOrBlank()) {
                 ClipboardDelivery.beginExposure(json.decodeFromString<ClipboardSyncPacket>(req.packetJson))
             }
             afterExposure?.invoke()

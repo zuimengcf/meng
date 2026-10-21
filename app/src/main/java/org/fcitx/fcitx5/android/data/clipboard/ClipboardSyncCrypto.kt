@@ -36,7 +36,25 @@ data class ClipboardSyncWireRequest(
     val inventory: ClipboardSyncInventory? = null,
     val receivedEntryIds: List<String> = emptyList(),
     val receivedEntryVersions: Map<String, String> = emptyMap(),
+    val expectedFingerprint: String? = null,
 )
+
+@Serializable
+data class ClipboardSyncSnapshotSummary(
+    val entries: Int,
+    val deletedEntries: Int,
+    val groups: Int,
+    val images: Int,
+) {
+    companion object {
+        fun from(packet: ClipboardSyncPacket) = ClipboardSyncSnapshotSummary(
+            entries = packet.entries.count { !it.deleted },
+            deletedEntries = packet.entries.count { it.deleted },
+            groups = packet.groups.count { !it.deleted },
+            images = packet.entries.count { !it.deleted && it.type.startsWith("image/") },
+        )
+    }
+}
 
 @Serializable
 data class ClipboardSyncWireResponse(
@@ -49,6 +67,9 @@ data class ClipboardSyncWireResponse(
     val onlineClientIds: List<String> = emptyList(),
     val inventory: ClipboardSyncInventory? = null,
     val receivedEntryIds: List<String> = emptyList(),
+    val deviceId: String = "",
+    val summary: ClipboardSyncSnapshotSummary? = null,
+    val receivedEntryVersions: Map<String, String> = emptyMap(),
 )
 
 object ClipboardSyncCrypto {

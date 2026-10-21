@@ -168,6 +168,30 @@ object ClipboardSyncServer {
             return ClipboardSyncWireResponse(true, requestId, "mcp", packetJson = McpServer.handle(req.packetJson ?: ""))
         }
         if (req.kind == "heartbeat") return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId)
+        if (req.kind == "full_preview") {
+            require(!mcpAuthorized) { "MCP token cannot authorize clipboard preview" }
+            val captured = ClipboardSnapshotStore.metadataCapture()
+            return ClipboardSyncWireResponse(true, requestId, req.kind, captured.fingerprint,
+                onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId, deviceId = ClipboardOplog.deviceId,
+                summary = ClipboardSyncSnapshotSummary.from(captured.packet))
+        }
+        if (req.kind == "full_download") {
+            require(!mcpAuthorized) { "MCP token cannot authorize full download" }
+            require(req.expectedFingerprint.isNullOrBlank().not()) { "全量下载缺少预览摘要" }
+            return ClipboardDelivery.withSendFence { _ ->
+                val captured = ClipboardSnapshotStore.capture()
+                require(captured.fingerprint == req.expectedFingerprint) { "主机内容在预览后有变化，请重新预览" }
+                ClipboardDelivery.beginExposure(captured.packet)
+                val versions = captured.packet.entries.associate {
+                    it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId)
+                }
+                offeredDeliveries[req.clientId] = OfferedDelivery(ClipboardDelivery.ids(captured.packet), versions)
+                ClipboardSyncWireResponse(true, requestId, req.kind, captured.fingerprint,
+                    json.encodeToString(captured.packet), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
+                    receivedEntryIds = ClipboardDelivery.ids(captured.packet).toList(), deviceId = ClipboardOplog.deviceId,
+                    summary = ClipboardSyncSnapshotSummary.from(captured.packet), receivedEntryVersions = versions)
+            }
+        }
         if (req.kind == "ack") {
             require(req.clientId != ClipboardOplog.deviceId) { "不能接受本机送达回执" }
             return ClipboardDelivery.withLock {
@@ -180,6 +204,29 @@ object ClipboardSyncServer {
                         })
                 }
                 ClipboardSyncWireResponse(true, requestId, "ack")
+            }
+        }
+        if (req.kind == "full_upload") {
+            require(!mcpAuthorized) { "MCP token cannot authorize full upload" }
+            require(!req.expectedFingerprint.isNullOrBlank()) { "全量上传缺少预览摘要" }
+            require(req.statusHash == req.expectedFingerprint) { "全量上传预览摘要不匹配" }
+            val packet = json.decodeFromString<ClipboardSyncPacket>(req.packetJson ?: error("全量上传缺少数据包"))
+            require(packet.deviceId == req.clientId && packet.deviceId != ClipboardOplog.deviceId) { "全量上传来源设备不匹配" }
+            ClipboardManualRestore.overwrite(packet, req.expectedFingerprint)
+            ClipboardDelivery.recordPeerReceipt(packet.deviceId, packet.entries.associate {
+                it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId)
+            })
+            return ClipboardDelivery.withSendFence { _ ->
+                val captured = ClipboardSnapshotStore.capture()
+                ClipboardDelivery.beginExposure(captured.packet)
+                val versions = captured.packet.entries.associate {
+                    it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId)
+                }
+                offeredDeliveries[req.clientId] = OfferedDelivery(ClipboardDelivery.ids(captured.packet), versions)
+                ClipboardSyncWireResponse(true, requestId, req.kind, captured.fingerprint,
+                    json.encodeToString(captured.packet), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
+                    receivedEntryIds = ClipboardDelivery.ids(packet).toList(), deviceId = ClipboardOplog.deviceId,
+                    summary = ClipboardSyncSnapshotSummary.from(captured.packet), receivedEntryVersions = versions)
             }
         }
         if (req.kind != "sync" || req.packetJson.isNullOrBlank()) throw IllegalArgumentException("invalid sync request")

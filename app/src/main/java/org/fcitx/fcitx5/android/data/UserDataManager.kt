@@ -13,6 +13,9 @@ import org.fcitx.fcitx5.android.data.backup.BackupFileTransaction
 import org.fcitx.fcitx5.android.data.backup.BackupValidation
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncSettings
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
+import org.fcitx.fcitx5.android.data.smart.ManualCorrectionRuleContract
+import org.fcitx.fcitx5.android.data.smart.ManualCorrectionRuleStore
+import org.fcitx.fcitx5.android.data.stats.InputStatsManager
 import org.fcitx.fcitx5.android.utils.*
 import java.io.File
 import java.io.InputStream
@@ -37,6 +40,7 @@ object UserDataManager {
         "recently_used" to File(context.filesDir, RecentlyUsed.DIR_NAME),
         "clipboard_images" to File(context.filesDir, "clipboard_images"),
         "clipboard_oplog" to File(context.filesDir, "clipboard_oplog.jsonl"),
+        "manual_corrections" to File(context.filesDir, "smart"),
     )
 
     /** Stream backups without application-imposed size or entry-count limits. */
@@ -110,7 +114,16 @@ object UserDataManager {
     @OptIn(ExperimentalSerializationApi::class)
     suspend fun export(dest: OutputStream, timestamp: Long = System.currentTimeMillis()) = ClipboardManager.withSyncLock { runCatching {
         withTempDir { temp ->
-            val sources = dirs(appContext)
+            val sources = dirs(appContext).toMutableMap()
+            val manualRulesJson = InputStatsManager.serialized {
+                InputStatsManager.requireNoPendingRecoveryUnlocked()
+                ManualCorrectionRuleStore.recoverPendingUnlocked()
+                ManualCorrectionRuleContract.encode(ManualCorrectionRuleStore.snapshotUnlocked())
+            }
+            val manualRulesSnapshot = File(temp, "manual_corrections")
+            check(manualRulesSnapshot.mkdirs()) { "Cannot stage manual correction rules" }
+            File(manualRulesSnapshot, "manual-corrections.json").writeText(manualRulesJson)
+            sources["manual_corrections"] = manualRulesSnapshot
             // A synchronous commit waits for earlier SharedPreferences.apply writes.
             sources.getValue("shared_prefs").listFiles().orEmpty()
                 .filter { it.isFile && it.extension == "xml" }
@@ -135,7 +148,7 @@ object UserDataManager {
                 }
                 val info = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
                 val metadata = Metadata(info.packageName, info.versionCodeCompat, Const.versionName, timestamp,
-                    formatVersion = 2, components = sources.keys.toList())
+                    formatVersion = 3, components = sources.keys.toList())
                 writer.entry("metadata.json", json.encodeToString(Metadata.serializer(), metadata).byteInputStream())
             }
         }
@@ -157,6 +170,9 @@ object UserDataManager {
                 "备份来源标识 ${metadata.packageName} 与当前应用 ${BuildConfig.APPLICATION_ID} 不兼容，请核对备份文件与导入入口"
             }
             BackupValidation.fullBackupComponents(staging, metadata.formatVersion, metadata.components)
+            if (metadata.formatVersion >= 3) {
+                ManualCorrectionRuleContract.decode(BackupValidation.manualRulesFile(staging).readText())
+            }
             val prefs = File(staging, "shared_prefs")
             prefs.walkTopDown().filter { it.isFile }.forEach { file ->
                 if (file.name.endsWith(".xml.bak")) {

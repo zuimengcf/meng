@@ -36,6 +36,15 @@
                 android:textSize="20sp"
                 android:textStyle="bold"
                 android:paddingHorizontal="8dp" />
+            <ImageButton
+                android:id="@+id/clipboard_manage_search_toggle"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:padding="12dp"
+                android:src="@drawable/ic_baseline_search_24"
+                app:tint="?android:attr/textColorPrimary"
+                android:contentDescription="搜索剪切板" />
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/clipboard_manage_sync"
                 style="@style/Widget.MaterialComponents.Button.TextButton"
@@ -109,6 +118,15 @@
                 android:minWidth="0dp"
                 android:minHeight="48dp"
                 android:text="排序" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/clipboard_manage_advanced_filter"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:minHeight="48dp"
+                android:text="状态筛选"
+                android:visibility="gone" />
         </LinearLayout>
         <HorizontalScrollView
             android:layout_width="match_parent"
@@ -125,6 +143,7 @@
                 app:selectionRequired="true" />
         </HorizontalScrollView>
         <LinearLayout
+            android:id="@+id/clipboard_manage_search_row"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
@@ -141,14 +160,15 @@
                 android:singleLine="true"
                 android:importantForAutofill="no"
                 android:saveEnabled="false" />
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/clipboard_manage_tools"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="0dp"
-                android:minHeight="48dp"
-                android:text="列表操作" />
+            <ImageButton
+                android:id="@+id/clipboard_manage_search_close"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:padding="12dp"
+                android:src="@drawable/ic_baseline_close_24"
+                app:tint="?android:attr/textColorSecondary"
+                android:contentDescription="关闭搜索" />
         </LinearLayout>
         <ProgressBar
             android:id="@+id/clipboard_sync_progress"

@@ -20,26 +20,89 @@ internal object ClipboardManualRestore {
 
     suspend fun merge(imported: ClipboardExportManager.ImportedPacket): Int = ClipboardManager.withSyncLock {
         val imageDir = File(appContext.getExternalFilesDir(null) ?: appContext.filesDir, "clipboard_images")
-        val changed = mergeInto(ClipboardManager.syncDatabase(), imported, imageDir,
+        val changed = mergeInto(ClipboardManager.syncDatabase(), imported.packet, imported.imageFiles, imageDir,
             appendHistory = ClipboardOplog::appendIncomingBatch, observeTime = { ClipboardManager.observeRemoteTime(it) })
         // Advance only after all rows and history are durable. No retention/GC is triggered here.
         ClipboardManager.mergeWatermarks(imported.packet.watermarks, durable = true)
         changed
     }
 
+    /** Replace the visible collection with an authenticated full snapshot. Older/shared local rows
+     * become normal tombstones, while provably local-only rows are physically removed by the same
+     * deletion policy used by the UI. The destination fingerprint makes preview/confirm atomic. */
+    suspend fun overwrite(packet: ClipboardSyncPacket, expectedFingerprint: String): Int =
+        ClipboardDelivery.withLock {
+            ClipboardManager.withSyncLock {
+                ClipboardExportManager.validatePacket(packet)
+                require(packet.deviceId.isNotBlank()) { "全量快照缺少来源设备标识" }
+                require(ClipboardSnapshotStore.fingerprintUnlocked() == expectedFingerprint) {
+                    "目标设备内容在预览后有变化，请重新预览再覆盖"
+                }
+                val database = ClipboardManager.syncDatabase()
+                val incomingEntryIds = packet.entries.mapTo(HashSet()) { it.syncId }
+                val incomingGroupIds = packet.groups.mapTo(HashSet()) { it.syncId }
+                val groupIds = packet.groups.associateBy { it.syncId }
+                require(packet.entries.all { row ->
+                    row.groupSyncId.isBlank() || row.groupSyncId in groupIds
+                }) { "全量快照引用了不存在或已删除的分组" }
+                require(packet.entries.none { !it.deleted && it.type.startsWith("image/") && it.imageData.isNullOrBlank() }) {
+                    "源设备有图片文件缺失；本次全量覆盖已取消，先在有原图的设备补齐图片再试"
+                }
+
+                val current = ClipboardSnapshotStore.metadataSnapshotUnlocked()
+                val greatest = maxOf(
+                    current.entries.maxOfOrNull { it.updatedAt } ?: 0L,
+                    current.groups.maxOfOrNull { it.updatedAt } ?: 0L,
+                    current.history.maxOfOrNull { it.ts } ?: 0L,
+                    packet.entries.maxOfOrNull { it.updatedAt } ?: 0L,
+                    packet.groups.maxOfOrNull { it.updatedAt } ?: 0L,
+                    packet.history.maxOfOrNull { it.ts } ?: 0L,
+                )
+                require(greatest < Long.MAX_VALUE - 1L) { "同步版本时钟已达上限，不能全量覆盖" }
+                val deletionTime = ClipboardManager.observeRemoteTime(greatest)
+                val replacementTime = ClipboardManager.observeRemoteTime(deletionTime)
+                val replaceTarget = suspend {
+                    val entries = ClipboardManager.syncDao().getAllIncludingDeleted()
+                    entries.filter { it.syncId !in incomingEntryIds && !it.deleted }
+                        .forEach { ClipboardManager.deleteEntryUnlocked(it, deletionTime) }
+
+                    ClipboardManager.syncGroupDao().getAllIncludingAll()
+                        .filter { it.syncId !in incomingGroupIds && !it.deleted }.forEach { oldGroup ->
+                        val stable = oldGroup.syncId.ifEmpty { ClipboardOplog.newSyncId() }
+                        val deleted = oldGroup.copy(syncId = stable, deleted = true, updatedAt = deletionTime,
+                            deviceId = ClipboardOplog.deviceId)
+                        ClipboardManager.syncGroupDao().upsert(deleted)
+                        ClipboardOplog.append(ClipboardOplog.OP_GROUP_DELETE, stable,
+                            group = ClipboardOplog.GroupOp(oldGroup.name, oldGroup.sortOrder), ts = deletionTime)
+                    }
+                }
+                val replacement = packet.copy(
+                    entries = packet.entries.map { it.copy(updatedAt = replacementTime, deviceId = packet.deviceId) },
+                    groups = packet.groups.map { it.copy(updatedAt = replacementTime, deviceId = packet.deviceId) }
+                )
+                val imageDir = File(appContext.getExternalFilesDir(null) ?: appContext.filesDir, "clipboard_images")
+                val changed = mergeInto(database, replacement, emptyMap(), imageDir, ClipboardOplog::appendIncomingBatch,
+                    observeTime = { ClipboardManager.observeRemoteTime(it) }, markShared = true,
+                    beforeMerge = replaceTarget)
+                ClipboardManager.mergeWatermarks(packet.watermarks, durable = true)
+                ClipboardManager.clearLastEntryAndRefreshCount()
+                changed
+            }
+        }
+
     /** Injectable storage boundary also used by isolated Room instrumentation tests. */
-    internal suspend fun mergeInto(database: ClipboardDatabase, imported: ClipboardExportManager.ImportedPacket,
-        imageDirectory: File, appendHistory: (List<ClipboardOplog.Op>) -> Unit,
+    internal suspend fun mergeInto(database: ClipboardDatabase, packet: ClipboardSyncPacket,
+        imageFiles: Map<String, File>, imageDirectory: File, appendHistory: (List<ClipboardOplog.Op>) -> Unit,
         observeTime: (Long) -> Unit = {},
-        retainCollection: () -> Unit = ClipboardManager::enableSyncRetention): Int {
-        val packet = imported.packet
+        retainCollection: () -> Unit = ClipboardManager::enableSyncRetention,
+        markShared: Boolean = false, beforeMerge: suspend () -> Unit = {}): Int {
         ClipboardExportManager.validatePacket(packet)
         // A durable, fail-closed setting must precede every row/image write. It deliberately
         // remains enabled after a failed restore: retaining extra data is safer than trimming.
         retainCollection()
         val materialized = HashMap<String, String>()
         fun image(key: String, embedded: String?, type: String): String? = materialized[key] ?: run {
-            val source = imported.imageFiles[key]
+            val source = imageFiles[key]
             val input = when {
                 source != null -> source.inputStream()
                 !embedded.isNullOrBlank() -> Base64InputStream(embedded.byteInputStream(), Base64.DEFAULT)
@@ -50,6 +113,7 @@ internal object ClipboardManualRestore {
         var changed = 0
         ClipboardOplog.withTransaction(database) {
             val gd = database.clipboardGroupDao(); val ed = database.clipboardDao()
+            beforeMerge()
             val journal = ArrayList<ClipboardOplog.Op>()
             packet.history.forEach { h ->
                 val payload = h.entry?.let { p -> p.copy(imagePath = image("h:${h.id}", p.imageData, p.type), imageData = null) }
@@ -90,16 +154,21 @@ internal object ClipboardManualRestore {
                     }
                     return@forEach
                 }
-                val path = incomingImage ?: localImage
+                val path = if (incoming.deleted) localImage else incomingImage ?: localImage
                 require(incoming.deleted || !incoming.type.startsWith("image/") || path != null) {
                     "备份未包含图片原文件，无法无损恢复；请在原设备重新导出剪贴板备份"
                 }
                 val group = incoming.groupSyncId.takeIf { it.isNotBlank() }?.let { gd.getBySyncId(it) }
-                ed.upsert(ClipboardEntry(id = local?.id ?: 0, text = incoming.text, pinned = incoming.pinned,
+                val retainLocalPayload = markShared && incoming.deleted
+                ed.upsert(ClipboardEntry(id = local?.id ?: 0,
+                    text = if (retainLocalPayload) local?.text.orEmpty() else incoming.text,
+                    pinned = if (retainLocalPayload) local?.pinned == true else incoming.pinned,
                     timestamp = incoming.timestamp, type = incoming.type, sensitive = incoming.sensitive,
                     deleted = incoming.deleted, imagePath = path, groupId = group?.takeUnless { it.deleted }?.id ?: 0,
                     groupSyncId = incoming.groupSyncId, syncId = incoming.syncId, updatedAt = incoming.updatedAt,
-                    sortOrder = incoming.sortOrder, lastModifiedBy = incoming.deviceId))
+                    sortOrder = incoming.sortOrder, lastModifiedBy = incoming.deviceId,
+                    hasBeenSynced = markShared || local?.hasBeenSynced == true,
+                    syncExposurePending = if (markShared) false else local?.syncExposurePending == true))
                 changed++
             }
             val groups = gd.getAllIncludingAll().associateBy { it.syncId }
