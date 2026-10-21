@@ -458,7 +458,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             val statsEnabled = switch(
                 R.string.smart_stats_enabled,
                 "smart_stats_enabled",
-                true,
+                false,
                 R.string.smart_stats_enabled_hint
             )
         }
@@ -469,7 +469,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             val suggestEnabled = switch(
                 R.string.smart_suggest_enabled,
                 "smart_suggest_enabled",
-                true,
+                false,
                 R.string.smart_suggest_enabled_hint
             )
         }
@@ -488,7 +488,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             val correctNeighbor = switch(
                 R.string.smart_correct_neighbor,
                 "smart_correct_neighbor",
-                true,
+                false,
                 R.string.smart_correct_neighbor_hint,
                 enableUiOn = { pinyinCorrectEnabled.getValue() }
             )
@@ -497,7 +497,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             val correctFuzzy = switch(
                 R.string.smart_correct_fuzzy,
                 "smart_correct_fuzzy",
-                true,
+                false,
                 R.string.smart_correct_fuzzy_hint,
                 enableUiOn = { pinyinCorrectEnabled.getValue() }
             )
@@ -506,7 +506,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
             val correctHabit = switch(
                 R.string.smart_correct_habit,
                 "smart_correct_habit",
-                true,
+                false,
                 R.string.smart_correct_habit_hint,
                 enableUiOn = { pinyinCorrectEnabled.getValue() }
             )

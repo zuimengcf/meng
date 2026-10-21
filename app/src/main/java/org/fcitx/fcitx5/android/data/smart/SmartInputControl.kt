@@ -23,7 +23,7 @@ object SmartInputControl {
 
     internal fun effectiveConfig(): Map<String, String> = linkedMapOf<String, String>().apply {
         SmartInputContract.booleanPreferences.forEach { (key, pref) ->
-            put(key, if (preferences.getBoolean(pref, key != "correction")) "1" else "0")
+            put(key, if (preferences.getBoolean(pref, false)) "1" else "0")
         }
         SmartInputContract.extraDefaults.forEach { (key, fallback) -> put(key, state.getString(key, fallback) ?: fallback) }
         put("external_expires_at_ms", state.getLong("external_expires_at_ms", 0).toString())
@@ -87,10 +87,10 @@ object SmartInputControl {
         effectiveConfig()
     }
 
-    /** Restore defaults, including correction off; learned dictionaries are not erased. */
+    /** Restore defaults with all smart switches off; learned dictionaries are not erased. */
     suspend fun resetConfig(): Map<String, String> = configure(
         SmartInputContract.extraDefaults + SmartInputContract.booleanPreferences.keys.associateWith {
-            if (it == "correction") "0" else "1"
+            "0"
         }
     )
 
