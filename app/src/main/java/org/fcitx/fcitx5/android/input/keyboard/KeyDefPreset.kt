@@ -4,6 +4,7 @@
  */
 package org.fcitx.fcitx5.android.input.keyboard
 
+import org.fcitx.fcitx5.android.input.keyboard.config.ChineseKeyboardSymbols
 import android.graphics.Typeface
 import androidx.annotation.DrawableRes
 import org.fcitx.fcitx5.android.R
@@ -57,7 +58,7 @@ class AlphabetKey(
     ),
     setOf(
         Behavior.Press(KeyAction.FcitxKeyAction(character)),
-        Behavior.Swipe(if (literalSymbols) KeyAction.CommitAction(punctuation) else KeyAction.FcitxKeyAction(punctuation))
+        Behavior.Swipe(if (literalSymbols) KeyAction.CommitAction(punctuation, modeAwarePunctuation = !ChineseKeyboardSymbols.isLiteralPeriod(character, punctuation)) else KeyAction.FcitxKeyAction(punctuation))
     ),
     popup ?: arrayOf(
         Popup.AltPreview(character, punctuation, rawAlternative = literalSymbols),

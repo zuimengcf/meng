@@ -60,71 +60,49 @@
       "type": "letter",
       "char": "e",
       "alt": "3",
-      "popup": [
-        "……"
-      ]
+      "popup": []
     },
     "r": {
       "type": "letter",
       "char": "r",
       "alt": "4",
-      "popup": [
-        "￥"
-      ]
+      "popup": []
     },
     "t": {
       "type": "letter",
       "char": "t",
       "alt": "5",
-      "popup": [
-        "%",
-        "‰"
-      ]
+      "popup": []
     },
     "y": {
       "type": "letter",
       "char": "y",
       "alt": "6",
-      "popup": [
-        "—",
-        "——"
-      ]
+      "popup": []
     },
     "u": {
       "type": "letter",
       "char": "u",
       "alt": "7",
-      "popup": [
-        "·",
-        "ü"
-      ]
+      "popup": []
     },
     "i": {
       "type": "letter",
       "char": "i",
       "alt": "8",
-      "popup": [
-        "「",
-        "」"
-      ]
+      "popup": []
     },
     "o": {
       "type": "letter",
       "char": "o",
       "alt": "9",
-      "popup": [
-        "『",
-        "』"
-      ]
+      "popup": []
     },
     "p": {
       "type": "letter",
       "char": "p",
       "alt": "0",
-      "popup": [
-        "〔",
-        "〕"
-      ]
+      "popup": []
     },
     "a": {
       "type": "letter",
@@ -206,7 +184,11 @@
       "char": "z",
       "alt": "'",
       "popup": [
-        "’"
+        "’",
+        "「",
+        "」",
+        "『",
+        "』"
       ]
     },
     "x": {
@@ -214,7 +196,9 @@
       "char": "x",
       "alt": ":",
       "popup": [
-        "×"
+        "×",
+        "%",
+        "‰"
       ]
     },
     "c": {
@@ -222,26 +206,35 @@
       "char": "c",
       "alt": "\"",
       "popup": [
-        "”"
+        "”",
+        "〔",
+        "〕"
       ]
     },
     "v": {
       "type": "letter",
       "char": "v",
       "alt": "?",
-      "popup": []
+      "popup": [
+        "……"
+      ]
     },
     "b": {
       "type": "letter",
       "char": "b",
       "alt": "!",
-      "popup": []
+      "popup": [
+        "￥"
+      ]
     },
     "n": {
       "type": "letter",
       "char": "n",
       "alt": "~",
-      "popup": []
+      "popup": [
+        "—",
+        "——"
+      ]
     },
     "m": {
       "type": "letter",
@@ -250,7 +243,9 @@
       "popup": [
         "\\",
         "&",
-        "_"
+        "_",
+        "·",
+        "ü"
       ]
     },
     "caps": {

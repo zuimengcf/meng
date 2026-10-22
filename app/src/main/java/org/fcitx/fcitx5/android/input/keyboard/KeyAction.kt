@@ -19,7 +19,7 @@ sealed class KeyAction {
 
     data class SymAction(val sym: KeySym, val states: KeyStates = KeyStates.Virtual) : KeyAction()
 
-    data class CommitAction(val text: String) : KeyAction()
+    data class CommitAction(val text: String, val modeAwarePunctuation: Boolean = true) : KeyAction()
 
     data class CapsAction(val lock: Boolean) : KeyAction()
 

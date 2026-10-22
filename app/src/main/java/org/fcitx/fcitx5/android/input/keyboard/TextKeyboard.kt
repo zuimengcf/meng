@@ -171,7 +171,7 @@ class TextKeyboard(
             }
             is KeyAction.CommitAction -> {
                 // 彈窗候選已按當前模式生成；直接鍵/滑動在這裡用同一策略提交。
-                if (source == KeyActionListener.Source.Keyboard) {
+                if (source == KeyActionListener.Source.Keyboard && action.modeAwarePunctuation) {
                     transformed = action.copy(text = modePunctuation(action.text))
                 }
             }
@@ -227,7 +227,7 @@ class TextKeyboard(
         val appearance = findViewById<KeyView>(viewId)?.def as? KeyDef.Appearance.Text
         // 隔音符是引擎按鍵，不是中文引號，不參與模式轉換。
         if (appearance?.modeAwarePunctuation == true && (raw || content.none { it.isLetter() })) {
-            return modePunctuation(content)
+            return ChineseKeyboardSymbols.display(appearance.displayText, content, chinesePunctuation)
         }
         return if (raw) content else transformPopupPreview(content)
     }
@@ -252,7 +252,10 @@ class TextKeyboard(
                 }
                 if (items.isNullOrEmpty()) action else action.copy(
                     keyboard = KeyDef.Popup.Keyboard.Explicit(
-                        KeyboardPunctuationMode.candidates(items, chinesePunctuation).toTypedArray()
+                        ChineseKeyboardSymbols.displayedCandidates(
+                            (findViewById<KeyView>(action.viewId)?.def as? KeyDef.Appearance.Text)?.displayText.orEmpty(),
+                            items, chinesePunctuation
+                        ).toTypedArray()
                     )
                 )
             }
@@ -307,7 +310,7 @@ class TextKeyboard(
         textKeys.forEach {
             if (it is AltTextKeyView) {
                 it.def as KeyDef.Appearance.AltText
-                it.altText.text = if (it.def.modeAwarePunctuation) modePunctuation(it.def.altText)
+                it.altText.text = if (it.def.modeAwarePunctuation) ChineseKeyboardSymbols.display(it.def.displayText, it.def.altText, chinesePunctuation)
                     else if (it.def.rawAltText) it.def.altText else transformPunctuation(it.def.altText)
             } else {
                 it.def as KeyDef.Appearance.Text

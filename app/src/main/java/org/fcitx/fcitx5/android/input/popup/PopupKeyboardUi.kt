@@ -130,7 +130,7 @@ class PopupKeyboardUi(
     override val offsetX = ((triggerBounds.width() - keyWidth) / 2) - (keyWidth * focusColumn)
     override val offsetY = (triggerBounds.height() - popupHeight) - (keyHeight * (rowCount - 1))
 
-    private val columnOrder = createColumnOrder(columnCount, focusColumn)
+    private val columnOrder = PopupKeyboardOrder.columns(columnCount, focusColumn)
 
     /**
      * row with smaller index displays at bottom.
