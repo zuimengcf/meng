@@ -1,0 +1,280 @@
+{
+  "rows": [
+    [
+      "q",
+      "w",
+      "e",
+      "r",
+      "t",
+      "y",
+      "u",
+      "i",
+      "o",
+      "p"
+    ],
+    [
+      "a",
+      "s",
+      "d",
+      "f",
+      "g",
+      "h",
+      "j",
+      "k",
+      "l"
+    ],
+    [
+      "caps",
+      "z",
+      "x",
+      "c",
+      "v",
+      "b",
+      "n",
+      "m",
+      "backspace"
+    ],
+    [
+      "symbol123",
+      "comma",
+      "lang",
+      "space",
+      "dot",
+      "return"
+    ]
+  ],
+  "keys": {
+    "q": {
+      "type": "letter",
+      "char": "q",
+      "alt": "1",
+      "popup": []
+    },
+    "w": {
+      "type": "letter",
+      "char": "w",
+      "alt": "2",
+      "popup": []
+    },
+    "e": {
+      "type": "letter",
+      "char": "e",
+      "alt": "3",
+      "popup": []
+    },
+    "r": {
+      "type": "letter",
+      "char": "r",
+      "alt": "4",
+      "popup": []
+    },
+    "t": {
+      "type": "letter",
+      "char": "t",
+      "alt": "5",
+      "popup": []
+    },
+    "y": {
+      "type": "letter",
+      "char": "y",
+      "alt": "6",
+      "popup": []
+    },
+    "u": {
+      "type": "letter",
+      "char": "u",
+      "alt": "7",
+      "popup": []
+    },
+    "i": {
+      "type": "letter",
+      "char": "i",
+      "alt": "8",
+      "popup": []
+    },
+    "o": {
+      "type": "letter",
+      "char": "o",
+      "alt": "9",
+      "popup": []
+    },
+    "p": {
+      "type": "letter",
+      "char": "p",
+      "alt": "0",
+      "popup": []
+    },
+    "a": {
+      "type": "letter",
+      "char": "a",
+      "alt": "@",
+      "popup": [
+        ","
+      ]
+    },
+    "s": {
+      "type": "letter",
+      "char": "s",
+      "alt": "*",
+      "popup": [
+        ";"
+      ]
+    },
+    "d": {
+      "type": "letter",
+      "char": "d",
+      "alt": "+",
+      "popup": [
+        "±"
+      ]
+    },
+    "f": {
+      "type": "letter",
+      "char": "f",
+      "alt": "-",
+      "popup": []
+    },
+    "g": {
+      "type": "letter",
+      "char": "g",
+      "alt": "=",
+      "popup": [
+        "≠",
+        "≈"
+      ]
+    },
+    "h": {
+      "type": "letter",
+      "char": "h",
+      "alt": "/",
+      "popup": [
+        "÷"
+      ]
+    },
+    "j": {
+      "type": "letter",
+      "char": "j",
+      "alt": "#",
+      "popup": [
+        "[",
+        "]"
+      ]
+    },
+    "k": {
+      "type": "letter",
+      "char": "k",
+      "alt": "(",
+      "popup": [
+        "<",
+        "{"
+      ]
+    },
+    "l": {
+      "type": "letter",
+      "char": "l",
+      "alt": ")",
+      "popup": [
+        ">",
+        "}"
+      ]
+    },
+    "z": {
+      "type": "letter",
+      "char": "z",
+      "alt": "'",
+      "popup": [
+        "\""
+      ]
+    },
+    "x": {
+      "type": "letter",
+      "char": "x",
+      "alt": ":",
+      "popup": [
+        "×",
+        "%",
+        "‰"
+      ]
+    },
+    "c": {
+      "type": "letter",
+      "char": "c",
+      "alt": "\"",
+      "popup": [
+        "[",
+        "]"
+      ]
+    },
+    "v": {
+      "type": "letter",
+      "char": "v",
+      "alt": "?",
+      "popup": [
+        "..."
+      ]
+    },
+    "b": {
+      "type": "letter",
+      "char": "b",
+      "alt": "!",
+      "popup": [
+        "$"
+      ]
+    },
+    "n": {
+      "type": "letter",
+      "char": "n",
+      "alt": "~",
+      "popup": [
+        "-",
+        "--"
+      ]
+    },
+    "m": {
+      "type": "letter",
+      "char": "m",
+      "alt": ".",
+      "popup": [
+        "\\",
+        "&",
+        "_"
+      ]
+    },
+    "caps": {
+      "type": "caps"
+    },
+    "backspace": {
+      "type": "backspace",
+      "width": 0.15,
+      "variant": "alternative"
+    },
+    "symbol123": {
+      "type": "layout_switch",
+      "label": "?123",
+      "to": "",
+      "width": 0.15
+    },
+    "comma": {
+      "type": "comma",
+      "width": 0.1,
+      "variant": "alternative",
+      "char": ","
+    },
+    "lang": {
+      "type": "lang"
+    },
+    "space": {
+      "type": "space"
+    },
+    "dot": {
+      "type": "symbol",
+      "char": ".",
+      "width": 0.1,
+      "variant": "alternative"
+    },
+    "return": {
+      "type": "return",
+      "width": 0.15
+    }
+  }
+}

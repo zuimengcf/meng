@@ -71,7 +71,11 @@ object KeyboardLayoutLoader {
                 val defaults = defaultConfig(layoutName)
                 val legacy = if (layoutName == "Text" && defaults != null)
                     ChineseKeyboardSymbols.legacyTextTemplate(defaults) else null
-                return if (custom == legacy) defaults ?: custom else custom
+                return when {
+                    custom == legacy -> defaults ?: custom
+                    (layoutName == "Text" || layoutName == "English") && defaults != null -> ChineseKeyboardSymbols.upgradeTextTemplate(custom, defaults)
+                    else -> custom
+                }
             }
         }
         val builtin = defaultConfig(layoutName) ?: return null
@@ -99,7 +103,7 @@ object KeyboardLayoutLoader {
     }
 
     private fun requireLayoutName(name: String) {
-        require(name == "Text" || name == "Number") { "未知布局名称" }
+        require(name == "Text" || name == "English" || name == "Number") { "未知布局名称" }
     }
 
     /** 把配置结构转换成 KeyDef 布局。 */

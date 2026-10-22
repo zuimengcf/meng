@@ -25,10 +25,11 @@ class KeyboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance(
             R.string.keyboard_position_menu_hint
         )
 
-        // 自定义键盘布局：可视化编辑器 + 打开文件目录（高级）
+        // 自定义键盘布局：中文、英文、数字可分别编辑 + 打开文件目录（高级）
         screen.addPreference(R.string.keyboard_layout_customize, R.string.keyboard_layout_editor_summary) {
             val items = arrayOf(
-                ctx.getString(R.string.keyboard_editor_letters),
+                "中文键盘",
+                "英文键盘",
                 ctx.getString(R.string.keyboard_editor_numbers),
                 ctx.getString(R.string.open_layout_file),
             )
@@ -36,19 +37,25 @@ class KeyboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance(
                 .setTitle(R.string.keyboard_layout_customize)
                 .setItems(items) { _, which ->
                     when (which) {
-                        0 -> { // 字母键盘编辑器
+                        0 -> { // 中文键盘编辑器
                             ctx.startActivity(
                                 Intent(ctx, KeyboardLayoutEditActivity::class.java)
                                     .putExtra(KeyboardLayoutEditActivity.EXTRA_LAYOUT, TextKeyboardLayoutName)
                             )
                         }
-                        1 -> { // 数字键盘编辑器
+                        1 -> { // 英文键盘编辑器
+                            ctx.startActivity(
+                                Intent(ctx, KeyboardLayoutEditActivity::class.java)
+                                    .putExtra(KeyboardLayoutEditActivity.EXTRA_LAYOUT, EnglishKeyboardLayoutName)
+                            )
+                        }
+                        2 -> { // 数字键盘编辑器
                             ctx.startActivity(
                                 Intent(ctx, KeyboardLayoutEditActivity::class.java)
                                     .putExtra(KeyboardLayoutEditActivity.EXTRA_LAYOUT, NumberKeyboardLayoutName)
                             )
                         }
-                        2 -> { // 打开文件目录（高级）
+                        3 -> { // 打开文件目录（高级）
                             try {
                                 ctx.startActivity(buildDocumentsProviderIntent())
                             } catch (e: Exception) {
@@ -64,6 +71,7 @@ class KeyboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance(
 
     private companion object {
         const val TextKeyboardLayoutName = "Text"
+        const val EnglishKeyboardLayoutName = "English"
         const val NumberKeyboardLayoutName = "Number"
     }
 }

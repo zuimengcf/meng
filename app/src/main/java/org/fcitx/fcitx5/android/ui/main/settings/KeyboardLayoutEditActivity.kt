@@ -50,7 +50,7 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityKeyboardLayoutEditorBinding
 
-    /** 布局名：Text 或 Number。 */
+    /** 布局名：Text（中文）、English（英文）或 Number（数字）。 */
     private val layoutName: String by lazy {
         intent.getStringExtra(EXTRA_LAYOUT).orEmpty().ifEmpty { "Text" }
     }
@@ -88,8 +88,12 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
             insets
         }
 
-        binding.kbEditorTitle.text =
-            getString(if (layoutName == "Number") R.string.keyboard_editor_numbers else R.string.keyboard_editor_letters)
+        binding.kbEditorTitle.text = when (layoutName) {
+            TextKeyboard.Name -> "中文键盘"
+            TextKeyboard.EnglishName -> "英文键盘"
+            "Number" -> "数字键盘"
+            else -> "键盘布局：$layoutName"
+        }
         binding.kbEditorBack.setOnClickListener { finish() }
         binding.kbEditorSave.setOnClickListener { saveConfig() }
         binding.kbEditorReload.setOnClickListener { loadConfig() }
@@ -208,7 +212,12 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
             if (layoutName == "Number") {
                 NumberKeyboard(this, theme, KeyboardLayoutLoader.toKeyDefs(config))
             } else {
-                TextKeyboard(this, theme, KeyboardLayoutLoader.toKeyDefs(config))
+                TextKeyboard(
+                    this,
+                    theme,
+                    KeyboardLayoutLoader.toKeyDefs(config),
+                    layoutName = layoutName
+                )
             }
         } catch (e: Throwable) {
             // 展示错误，便于定位为何真实键盘没渲染

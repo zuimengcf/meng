@@ -23,6 +23,7 @@ import org.fcitx.fcitx5.android.input.dependency.inputMethodService
 import org.fcitx.fcitx5.android.input.dependency.theme
 import org.fcitx.fcitx5.android.input.picker.PickerWindow
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutLoader
+import org.fcitx.fcitx5.android.input.keyboard.config.TextKeyboardLayouts
 import org.fcitx.fcitx5.android.input.popup.PopupActionListener
 import org.fcitx.fcitx5.android.input.popup.PopupComponent
 import org.fcitx.fcitx5.android.input.wm.EssentialWindow
@@ -70,10 +71,12 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
     private val keyboards: HashMap<String, BaseKeyboard> by lazy {
         hashMapOf(
             TextKeyboard.Name to TextKeyboard(context, theme),
+            TextKeyboard.EnglishName to TextKeyboard(context, theme, layoutName = TextKeyboard.EnglishName),
             NumberKeyboard.Name to NumberKeyboard(context, theme)
         ).also { layoutRevision = KeyboardLayoutLoader.revision }
     }
     private var currentKeyboardName = ""
+    private var activeTextLayoutName = TextKeyboard.Name
     private var lastSymbolType: String by AppPrefs.getInstance().internal.lastSymbolLayout
 
     private val currentKeyboard: BaseKeyboard? get() = keyboards[currentKeyboardName]
@@ -93,7 +96,8 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
     // This will be called EXACTLY ONCE
     override fun onCreateView(): View {
         keyboardView = context.frameLayout(R.id.keyboard_view)
-        attachLayout(TextKeyboard.Name)
+        activeTextLayoutName = TextKeyboardLayouts.forInputMethod(fcitx.runImmediately { inputMethodEntryCached })
+        attachLayout(activeTextLayoutName)
         return keyboardView
     }
 
@@ -106,7 +110,7 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
         }
     }
 
-    private fun attachLayout(target: String) {
+    private fun attachLayout(target: String, ime: InputMethodEntry? = null) {
         currentKeyboardName = target
         currentKeyboard?.let {
             it.keyActionListener = keyActionListener
@@ -114,15 +118,17 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
             keyboardView.apply { add(it, lParams(matchParent, matchParent)) }
             it.onAttach()
             it.onReturnDrawableUpdate(returnKeyDrawable.resourceId)
-            it.onInputMethodUpdate(fcitx.runImmediately { inputMethodEntryCached })
+            it.onInputMethodUpdate(ime ?: fcitx.runImmediately { inputMethodEntryCached })
         }
     }
 
     fun switchLayout(to: String, remember: Boolean = true) {
-        val target = to.ifEmpty { lastSymbolType }
         ContextCompat.getMainExecutor(service).execute {
+            // 符号/数字页的 Text 返回入口必须跟随当前引擎模式，而非固定回中文。
+            activeTextLayoutName = TextKeyboardLayouts.forInputMethod(fcitx.runImmediately { inputMethodEntryCached })
+            val target = TextKeyboardLayouts.resolveTarget(to.ifEmpty { lastSymbolType }, activeTextLayoutName)
             if (keyboards.containsKey(target)) {
-                if (remember && target != TextKeyboard.Name) {
+                if (remember && !TextKeyboardLayouts.isText(target)) {
                     lastSymbolType = target
                 }
                 if (target == currentKeyboardName) return@execute
@@ -155,9 +161,10 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
         detachCurrentLayout()
         keyboards.clear()
         keyboards[TextKeyboard.Name] = TextKeyboard(context, theme)
+        keyboards[TextKeyboard.EnglishName] = TextKeyboard(context, theme, layoutName = TextKeyboard.EnglishName)
         keyboards[NumberKeyboard.Name] = NumberKeyboard(context, theme)
         layoutRevision = KeyboardLayoutLoader.revision
-        attachLayout(target)
+        attachLayout(TextKeyboardLayouts.resolveTarget(target, activeTextLayoutName))
     }
 
     override fun onStartInput(info: EditorInfo, capFlags: CapabilityFlags) {
@@ -171,7 +178,14 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
     }
 
     override fun onImeUpdate(ime: InputMethodEntry) {
-        currentKeyboard?.onInputMethodUpdate(ime)
+        activeTextLayoutName = TextKeyboardLayouts.forInputMethod(ime)
+        if (::keyboardView.isInitialized && TextKeyboardLayouts.isText(currentKeyboardName) &&
+            currentKeyboardName != activeTextLayoutName) {
+            popup.dismissAll()
+            detachCurrentLayout()
+            attachLayout(activeTextLayoutName, ime)
+            if (windowManager.isAttached(this)) notifyBarLayoutChanged()
+        } else currentKeyboard?.onInputMethodUpdate(ime)
     }
 
     override fun onPunctuationUpdate(mapping: Map<String, String>) {
@@ -183,7 +197,13 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
     }
 
     override fun onAttached() {
+        activeTextLayoutName = TextKeyboardLayouts.forInputMethod(fcitx.runImmediately { inputMethodEntryCached })
         refreshSavedLayouts()
+        if (TextKeyboardLayouts.isText(currentKeyboardName) && currentKeyboardName != activeTextLayoutName) {
+            popup.dismissAll()
+            detachCurrentLayout()
+            attachLayout(activeTextLayoutName)
+        }
         currentKeyboard?.let {
             it.keyActionListener = keyActionListener
             it.popupActionListener = popupActionListener

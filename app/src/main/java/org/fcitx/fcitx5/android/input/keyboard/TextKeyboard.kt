@@ -18,6 +18,7 @@ import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.theme.Theme
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutLoader
 import org.fcitx.fcitx5.android.input.keyboard.config.ChineseKeyboardSymbols
+import org.fcitx.fcitx5.android.input.keyboard.config.AlphabetPopupCandidates
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardPunctuationMode
 import org.fcitx.fcitx5.android.market.LongPressPresetEditor
 import org.fcitx.fcitx5.android.input.popup.PopupAction
@@ -28,13 +29,19 @@ class TextKeyboard(
     context: Context,
     theme: Theme,
     /** 可选：显式指定布局（供布局编辑器做「真实主题渲染」的预览）。null 时用 [Layout]（磁盘/内置）。 */
-    keyLayoutOverride: List<List<KeyDef>>? = null
-) : BaseKeyboard(context, theme, keyLayoutOverride ?: Layout) {
+    keyLayoutOverride: List<List<KeyDef>>? = null,
+    val layoutName: String = Name,
+    initialChinesePunctuation: Boolean = layoutName != EnglishName
+) : BaseKeyboard(context, theme, keyLayoutOverride ?: layoutFor(layoutName)) {
 
     enum class CapsState { None, Once, Lock }
 
     companion object {
         const val Name = "Text"
+        const val EnglishName = "English"
+
+        fun layoutFor(name: String): List<List<KeyDef>> =
+            KeyboardLayoutLoader.loadOrNull(name) ?: if (name == EnglishName) englishBuiltinLayout else builtinLayout
 
         /**
          * 布局来源：优先读外部 JSON 配置（用户可自定义），失败/缺失时回退到代码内置 [builtinLayout]。
@@ -75,7 +82,7 @@ class TextKeyboard(
                 defaultLetter("L")
             ),
             listOf(
-                CapsKey(),
+                SeparatorKey(0.1f, KeyDef.Appearance.Variant.Alternative),
                 defaultLetter("Z"),
                 defaultLetter("X"),
                 defaultLetter("C"),
@@ -94,6 +101,11 @@ class TextKeyboard(
                 ReturnKey()
             )
         )
+
+        // 两套独立布局：中文原位为分词，英文原位为大小写。
+        val englishBuiltinLayout: List<List<KeyDef>> = builtinLayout.map { row ->
+            row.map { if (it is SeparatorKey) CapsKey() else it }
+        }
     }
 
     val caps: ImageKeyView? by lazy { findViewById(R.id.button_caps) }
@@ -131,7 +143,7 @@ class TextKeyboard(
     }
 
     // 編輯器預設預覽中文；實際鍵盤由引擎subMode即時更新。
-    private var chinesePunctuation = true
+    private var chinesePunctuation = initialChinesePunctuation
     private fun modePunctuation(text: String) = KeyboardPunctuationMode.display(text, chinesePunctuation)
 
     private var punctuationMapping: Map<String, String> = mapOf()
@@ -208,6 +220,7 @@ class TextKeyboard(
             textKeys.forEach { super.onPopupAction(PopupAction.DismissAction(it.id)) }
         }
         updatePunctuationKeys()
+        updateCapsButtonIcon()
         space?.mainText?.text = buildString {
             append(ime.displayName)
             ime.subMode.run { label.ifEmpty { name.ifEmpty { null } } }?.let { append(" ($it)") }
@@ -250,11 +263,15 @@ class TextKeyboard(
                         LongPressPresetEditor.getFor(context, label)?.toList()
                     }
                 }
-                if (items.isNullOrEmpty()) action else action.copy(
+                val appearance = findViewById<KeyView>(action.viewId)?.def as? KeyDef.Appearance.Text
+                val key = appearance?.displayText.orEmpty()
+                val candidates = if (appearance is KeyDef.Appearance.AltText)
+                    AlphabetPopupCandidates.resolve(key, items.orEmpty(), capsState != CapsState.None)
+                else items.orEmpty()
+                if (candidates.isEmpty()) action else action.copy(
                     keyboard = KeyDef.Popup.Keyboard.Explicit(
                         ChineseKeyboardSymbols.displayedCandidates(
-                            (findViewById<KeyView>(action.viewId)?.def as? KeyDef.Appearance.Text)?.displayText.orEmpty(),
-                            items, chinesePunctuation
+                            key, candidates, chinesePunctuation
                         ).toTypedArray()
                     )
                 )

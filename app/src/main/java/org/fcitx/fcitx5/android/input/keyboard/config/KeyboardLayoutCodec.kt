@@ -68,7 +68,7 @@ object KeyboardLayoutCodec {
                 is KeySpec.Return -> width(key.width)
                 is KeySpec.LayoutSwitch -> {
                     text(key.label); width(key.width); variant(key.variant)
-                    require(key.to in setOf("", "Text", "Number", "Symbol", "Emoji", "Emoticon")) { "未知目标键盘" }
+                    require(key.to in setOf("", "Text", "English", "Number", "Symbol", "Emoji", "Emoticon")) { "未知目标键盘" }
                 }
                 else -> Unit
             }

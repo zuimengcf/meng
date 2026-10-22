@@ -32,7 +32,7 @@ object ChineseKeyboardSymbols {
         "v" to listOf("?", "……"),
         "b" to listOf("!", "￥"),
         "n" to listOf("~", "—", "——"),
-        "m" to listOf(".", "\\", "&", "_", "·", "ü")
+        "m" to listOf(".", "\\", "&", "_", "·")
     )
 
     /** M 的英文點號不隨中英文模式轉換；其他鍵（含獨立句號鍵）維持原策略。 */
@@ -44,14 +44,41 @@ object ChineseKeyboardSymbols {
     fun displayedCandidates(key: String, items: List<String>, chinese: Boolean): List<String> =
         items.map { display(key, it, chinese) }.distinct()
 
+    /** 仅识别原样出厂副本；旧版及被拒版本均只在加载时升级，不覆盖自定义文件。 */
+    fun upgradeTextTemplate(custom: KeyboardLayoutConfig, defaults: KeyboardLayoutConfig): KeyboardLayoutConfig {
+        val g = defaults.keys["g"] as? KeySpec.Letter ?: return custom
+        val m = defaults.keys["m"] as? KeySpec.Letter ?: return custom
+        val oldG = g.copy(popup = listOf("G", "ğ", "≠", "≈"))
+        val previousCandidates = defaults.copy(keys = defaults.keys + ("g" to oldG))
+        val previousSingleG = defaults.copy(keys = defaults.keys + ("g" to g.copy(popup = listOf("G", "≠", "≈"))))
+        if (custom == previousCandidates || custom == previousSingleG) return defaults
+        if (defaults.keys["caps"] == KeySpec.Separator) {
+            val previousRelease = defaults.copy(keys = defaults.keys +
+                ("g" to g.copy(popup = listOf("≠", "≈"))) +
+                ("m" to m.copy(popup = m.popup.orEmpty() + "ü")))
+            val rejected = defaults.copy(
+                rows = defaults.rows.map { row -> row.flatMap { id ->
+                    if (id == "space") listOf("separator", id) else listOf(id)
+                } },
+                keys = defaults.keys + ("caps" to KeySpec.Caps) +
+                    ("separator" to KeySpec.Separator) + ("g" to oldG)
+            )
+            if (custom == previousRelease || custom == rejected) return defaults
+        }
+        return custom
+    }
+
     /** 精确识别旧出厂配置；只替换从未自定义过的外部副本。 */
     fun legacyTextTemplate(defaults: KeyboardLayoutConfig): KeyboardLayoutConfig {
         val letters = "qwertyuiopasdfghjklzxcvbnm"
         val alts = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
             "@", "*", "+", "-", "=", "/", "#", "(", ")", "'", ":", "\"", "?", "!", "~", "\\")
         val oldAlts = letters.map(Char::toString).zip(alts).toMap()
-        return defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
+        return defaults.copy(
+            rows = defaults.rows.map { it.filterNot { id -> id == "separator" } },
+            keys = (defaults.keys - "separator").mapValues { (id, key) ->
             when {
+                id == "caps" -> KeySpec.Separator
                 key is KeySpec.Letter && id in oldAlts -> key.copy(alt = oldAlts.getValue(id), popup = null)
                 key is KeySpec.Symbol && id == "dot" -> key.copy(char = ".")
                 key is KeySpec.Comma && id == "comma" -> key.copy(char = ",")
