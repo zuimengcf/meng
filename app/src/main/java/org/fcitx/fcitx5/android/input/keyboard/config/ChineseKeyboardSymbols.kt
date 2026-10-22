@@ -26,7 +26,7 @@ object ChineseKeyboardSymbols {
         "j" to listOf("#", "【", "】"),
         "k" to listOf("（", "《", "{"),
         "l" to listOf("）", "》", "}"),
-        "z" to listOf("'", "’", "「", "」", "『", "』"),
+        "z" to listOf("'", "「", "」", "『", "』", "’"),
         "x" to listOf(":", "×", "%", "‰"),
         "c" to listOf("\"", "”", "〔", "〕"),
         "v" to listOf("?", "……"),
@@ -46,21 +46,36 @@ object ChineseKeyboardSymbols {
 
     /** 仅识别原样出厂副本；旧版及被拒版本均只在加载时升级，不覆盖自定义文件。 */
     fun upgradeTextTemplate(custom: KeyboardLayoutConfig, defaults: KeyboardLayoutConfig): KeyboardLayoutConfig {
-        val g = defaults.keys["g"] as? KeySpec.Letter ?: return custom
-        val m = defaults.keys["m"] as? KeySpec.Letter ?: return custom
+        // 被打回版本只平移了 P/L 的整個彈窗；原樣副本恢復為字母左鄰、整體不平移。
+        val rejectedPopupShift = defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
+            if (id in listOf("p", "l") && key is KeySpec.Letter)
+                key.copy(popupLetterOffset = 1, popupShiftX = -1) else key
+        })
+        if (custom == rejectedPopupShift) return defaults
+        // 上一版沒有座標欄位，Z 的配對符號也尚未重新分組。
+        val previousPositions = defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
+            if (key is KeySpec.Letter) key.copy(
+                popupLetterOffset = 1, popupShiftX = 0,
+                popup = if (id == "z" && defaults.keys["caps"] == KeySpec.Separator)
+                    listOf("’", "「", "」", "『", "』") else key.popup
+            ) else key
+        })
+        if (custom == previousPositions) return defaults
+        val g = previousPositions.keys["g"] as? KeySpec.Letter ?: return custom
+        val m = previousPositions.keys["m"] as? KeySpec.Letter ?: return custom
         val oldG = g.copy(popup = listOf("G", "ğ", "≠", "≈"))
-        val previousCandidates = defaults.copy(keys = defaults.keys + ("g" to oldG))
-        val previousSingleG = defaults.copy(keys = defaults.keys + ("g" to g.copy(popup = listOf("G", "≠", "≈"))))
+        val previousCandidates = previousPositions.copy(keys = previousPositions.keys + ("g" to oldG))
+        val previousSingleG = previousPositions.copy(keys = previousPositions.keys + ("g" to g.copy(popup = listOf("G", "≠", "≈"))))
         if (custom == previousCandidates || custom == previousSingleG) return defaults
         if (defaults.keys["caps"] == KeySpec.Separator) {
-            val previousRelease = defaults.copy(keys = defaults.keys +
+            val previousRelease = previousPositions.copy(keys = previousPositions.keys +
                 ("g" to g.copy(popup = listOf("≠", "≈"))) +
                 ("m" to m.copy(popup = m.popup.orEmpty() + "ü")))
-            val rejected = defaults.copy(
-                rows = defaults.rows.map { row -> row.flatMap { id ->
+            val rejected = previousPositions.copy(
+                rows = previousPositions.rows.map { row -> row.flatMap { id ->
                     if (id == "space") listOf("separator", id) else listOf(id)
                 } },
-                keys = defaults.keys + ("caps" to KeySpec.Caps) +
+                keys = previousPositions.keys + ("caps" to KeySpec.Caps) +
                     ("separator" to KeySpec.Separator) + ("g" to oldG)
             )
             if (custom == previousRelease || custom == rejected) return defaults
@@ -79,7 +94,7 @@ object ChineseKeyboardSymbols {
             keys = (defaults.keys - "separator").mapValues { (id, key) ->
             when {
                 id == "caps" -> KeySpec.Separator
-                key is KeySpec.Letter && id in oldAlts -> key.copy(alt = oldAlts.getValue(id), popup = null)
+                key is KeySpec.Letter && id in oldAlts -> key.copy(alt = oldAlts.getValue(id), popup = null, popupLetterOffset = 1, popupShiftX = 0)
                 key is KeySpec.Symbol && id == "dot" -> key.copy(char = ".")
                 key is KeySpec.Comma && id == "comma" -> key.copy(char = ",")
                 else -> key

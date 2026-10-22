@@ -131,7 +131,13 @@ open class KeyDef(
             data class Preset(val label: String, val transformPunctuation: Boolean = false) :
                 Keyboard()
 
-            class Explicit(val items: Array<String>) : Keyboard()
+            class Explicit(
+                val items: Array<String>,
+                /** 字母候選相對副符號的欄位偏移；null 保留非字母彈窗規則。 */
+                val letterOffset: Int? = null,
+                /** 整個彈窗以候選格寬為單位平移，最後仍限制於螢幕內。 */
+                val shiftX: Int = 0
+            ) : Keyboard()
         }
 
         class Menu(val items: Array<Item>) : Popup() {

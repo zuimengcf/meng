@@ -123,7 +123,13 @@ object KeyboardLayoutLoader {
                     char, items.firstOrNull().orEmpty(), variant.variant(),
                     popup = buildList<KeyDef.Popup> {
                         add(KeyDef.Popup.AltPreview(char, items.firstOrNull().orEmpty(), rawAlternative = true))
-                        if (items.isNotEmpty()) add(KeyDef.Popup.Keyboard.Explicit(items.toTypedArray()))
+                        add(
+                            KeyDef.Popup.Keyboard.Explicit(
+                                items.toTypedArray(),
+                                letterOffset = popupLetterOffset,
+                                shiftX = popupShiftX,
+                            )
+                        )
                     }.toTypedArray(),
                     literalSymbols = true
                 )

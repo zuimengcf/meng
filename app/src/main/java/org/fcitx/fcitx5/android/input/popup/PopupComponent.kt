@@ -140,6 +140,7 @@ class PopupComponent :
                 labels = keyboard.items
             }
         }
+        if (keys.isEmpty()) return
         // clear popup preview text         OR create empty popup preview
         showingEntryUi[viewId]?.setText("") ?: showPopup(viewId, "", bounds)
         val keyboardUi = PopupKeyboardUi(
@@ -154,7 +155,9 @@ class PopupComponent :
             // position popup keyboard higher, because of [^1]
             popupHeight + keyBottomMargin,
             keys,
-            labels
+            labels,
+            (keyboard as? KeyDef.Popup.Keyboard.Explicit)?.letterOffset,
+            (keyboard as? KeyDef.Popup.Keyboard.Explicit)?.shiftX ?: 0
         )
         showPopupContainer(viewId, keyboardUi)
     }

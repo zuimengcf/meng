@@ -28,7 +28,11 @@ object KeyboardLayoutCodec {
     fun canonicalize(config: KeyboardLayoutConfig): KeyboardLayoutConfig = config.copy(
         keys = config.keys.mapValues { (_, key) ->
             if (key is KeySpec.Letter && key.popup != null) {
-                key.copy(popup = key.popup.filter { it != key.alt }.distinct())
+                key.copy(
+                    popup = key.popup.filter { it != key.alt }.distinct(),
+                    popupLetterOffset = key.popupLetterOffset,
+                    popupShiftX = key.popupShiftX,
+                )
             } else {
                 key
             }
@@ -48,6 +52,10 @@ object KeyboardLayoutCodec {
                     require(key.char.length == 1 && (key.char[0] in 'a'..'z' || key.char[0] in 'A'..'Z')) { "字母键必须是单个英文字母" }
                     key.alt?.takeIf { it.isNotEmpty() }?.let(::text)
                     variant(key.variant)
+                    require(key.popupLetterOffset == -1 || key.popupLetterOffset == 1) {
+                        "按键$id 的popupLetterOffset必须为-1或1"
+                    }
+                    require(key.popupShiftX in -2..2) { "按键$id 的popupShiftX必须在-2–2之间" }
                     key.popup?.let { items ->
                         // []合法，运行时仍由resolve把alt作为首项；旧格式含alt由canonicalize去重。
                         require(items.size in 0..MAX_POPUP_EXTRAS) {

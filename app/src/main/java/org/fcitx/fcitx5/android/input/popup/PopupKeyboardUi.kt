@@ -21,9 +21,6 @@ import splitties.views.dsl.core.matchParent
 import splitties.views.dsl.core.verticalLayout
 import splitties.views.dsl.core.view
 import splitties.views.gravityCenter
-import splitties.views.gravityEnd
-import splitties.views.gravityStart
-import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
 
@@ -49,11 +46,13 @@ class PopupKeyboardUi(
     triggerBounds: Rect,
     onDismissSelf: PopupContainerUi.() -> Unit = {},
     private val radius: Float,
-    private val keyWidth: Int,
+    keyWidth: Int,
     private val keyHeight: Int,
     private val popupHeight: Int,
     private val keys: Array<String>,
-    private val labels: Array<String>
+    private val labels: Array<String>,
+    letterOffset: Int? = null,
+    shiftX: Int = 0
 ) : PopupContainerUi(ctx, theme, outerBounds, triggerBounds, onDismissSelf) {
 
     class PopupKeyUi(override val ctx: Context, val theme: Theme, val text: String) : Ui {
@@ -82,21 +81,16 @@ class PopupKeyboardUi(
         setColor(theme.genericActiveBackgroundColor)
     }
 
-    private val rowCount: Int
-    private val columnCount: Int
-
-    // those 2 variables meas initial focus row/column during initialization
-    private val focusRow: Int
-    private val focusColumn: Int
-
-    init {
-        val keyCount: Float = keys.size.toFloat()
-        rowCount = ceil(keyCount / 5).toInt()
-        columnCount = (keyCount / rowCount).roundToInt()
-
-        focusRow = 0
-        focusColumn = calcInitialFocusedColumn(columnCount, keyWidth, outerBounds, triggerBounds)
-    }
+    private val layout = PopupKeyboardLayout.create(
+        keys.toList(), keyWidth, outerBounds.left, outerBounds.right,
+        triggerBounds.left, triggerBounds.right, letterOffset, shiftX
+    )
+    private val keyWidth = layout.keyWidth
+    private val keyOrders = layout.rows
+    private val rowCount = keyOrders.size
+    private val columnCount = keyOrders.first().size
+    private val focusRow = 0
+    private val focusColumn = layout.focusColumn
 
     /**
      * Offset on X axis made up of 2 parts:
@@ -127,27 +121,8 @@ class PopupKeyboardUi(
      * Applying only `1.` parts of both X and Y offset, the origin should transform from `o` to `p`.
      * `2.` parts of both offset transform it from `p` to `c`.
      */
-    override val offsetX = ((triggerBounds.width() - keyWidth) / 2) - (keyWidth * focusColumn)
+    override val offsetX = layout.offsetX
     override val offsetY = (triggerBounds.height() - popupHeight) - (keyHeight * (rowCount - 1))
-
-    private val columnOrder = PopupKeyboardOrder.columns(columnCount, focusColumn)
-
-    /**
-     * row with smaller index displays at bottom.
-     * for example, keyOrders array:
-     * ```
-     * [[2, 0, 1, 3], [6, 4, 5, 7]]
-     * ```
-     * displays as
-     * ```
-     * | 6 | 4 | 5 | 7 |
-     * | 2 | 0 | 1 | 3 |
-     * ```
-     * in which `0` indicates default focus
-     */
-    private val keyOrders = Array(rowCount) { row ->
-        IntArray(columnCount) { col -> row * columnCount + columnOrder[col] }
-    }
 
     private var focusedIndex = keyOrders[focusRow][focusColumn]
 
@@ -170,10 +145,8 @@ class PopupKeyboardUi(
                 for (j in 0 until columnCount) {
                     val keyUi = keyUis.getOrNull(order[j])
                     if (keyUi == null) {
-                        // align columns to right (end) when first column is empty, eg.
-                        // |   | 6 | 5 | 4 |(no free space)
-                        // | 3 | 2 | 1 | 0 |(no free space)
-                        gravity = if (j == 0) gravityEnd else gravityStart
+                        // 保留空格寬度，否則候選顯示與手勢座標會錯位。
+                        add(frameLayout {}, lParams(keyWidth, keyHeight))
                     } else {
                         add(keyUi.root, lParams(keyWidth, keyHeight))
                     }
@@ -209,7 +182,7 @@ class PopupKeyboardUi(
         newRow = limitIndex(newRow, rowCount)
         newColumn = limitIndex(newColumn, columnCount)
         val newFocus = keyOrders[newRow][newColumn]
-        if (newFocus < keyUis.size) {
+        if (newFocus in keyUis.indices) {
             markInactive(focusedIndex)
             markFocus(newFocus)
             focusedIndex = newFocus

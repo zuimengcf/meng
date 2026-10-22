@@ -43,6 +43,12 @@ sealed class KeySpec {
         val variant: String = "normal",
         /** 额外长按候选；null 使用旧版 fallback，[] 表示无额外候选。 */
         val popup: List<String>? = null,
+        /** 字母候选相对副符号列的偏移：-1 左邻，+1 右邻。 */
+        @SerialName("popup_letter_offset")
+        val popupLetterOffset: Int = 1,
+        /** 整体 popup 横向偏移，单位为候选格宽。 */
+        @SerialName("popup_shift_x")
+        val popupShiftX: Int = 0,
     ) : KeySpec()
 
     /** 通用符号/文本键：按字面提交文本。对应 `SymbolKey`。 */

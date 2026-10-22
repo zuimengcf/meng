@@ -48,61 +48,81 @@
       "type": "letter",
       "char": "q",
       "alt": "1",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "w": {
       "type": "letter",
       "char": "w",
       "alt": "2",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "e": {
       "type": "letter",
       "char": "e",
       "alt": "3",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "r": {
       "type": "letter",
       "char": "r",
       "alt": "4",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "t": {
       "type": "letter",
       "char": "t",
       "alt": "5",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "y": {
       "type": "letter",
       "char": "y",
       "alt": "6",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "u": {
       "type": "letter",
       "char": "u",
       "alt": "7",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "i": {
       "type": "letter",
       "char": "i",
       "alt": "8",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "o": {
       "type": "letter",
       "char": "o",
       "alt": "9",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "p": {
       "type": "letter",
       "char": "p",
       "alt": "0",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": -1,
+      "popup_shift_x": 0
     },
     "a": {
       "type": "letter",
@@ -111,7 +131,9 @@
       "popup": [
         "，",
         "、"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "s": {
       "type": "letter",
@@ -119,7 +141,9 @@
       "alt": "*",
       "popup": [
         "；"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "d": {
       "type": "letter",
@@ -127,13 +151,17 @@
       "alt": "+",
       "popup": [
         "±"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "f": {
       "type": "letter",
       "char": "f",
       "alt": "-",
-      "popup": []
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "g": {
       "type": "letter",
@@ -142,7 +170,9 @@
       "popup": [
         "≠",
         "≈"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "h": {
       "type": "letter",
@@ -150,7 +180,9 @@
       "alt": "/",
       "popup": [
         "÷"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "j": {
       "type": "letter",
@@ -159,7 +191,9 @@
       "popup": [
         "【",
         "】"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "k": {
       "type": "letter",
@@ -168,7 +202,9 @@
       "popup": [
         "《",
         "{"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "l": {
       "type": "letter",
@@ -177,19 +213,23 @@
       "popup": [
         "》",
         "}"
-      ]
+      ],
+      "popup_letter_offset": -1,
+      "popup_shift_x": 0
     },
     "z": {
       "type": "letter",
       "char": "z",
       "alt": "'",
       "popup": [
-        "’",
         "「",
         "」",
         "『",
-        "』"
-      ]
+        "』",
+        "’"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "x": {
       "type": "letter",
@@ -199,7 +239,9 @@
         "×",
         "%",
         "‰"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "c": {
       "type": "letter",
@@ -209,7 +251,9 @@
         "”",
         "〔",
         "〕"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "v": {
       "type": "letter",
@@ -217,7 +261,9 @@
       "alt": "?",
       "popup": [
         "……"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "b": {
       "type": "letter",
@@ -225,7 +271,9 @@
       "alt": "!",
       "popup": [
         "￥"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "n": {
       "type": "letter",
@@ -234,7 +282,9 @@
       "popup": [
         "—",
         "——"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "m": {
       "type": "letter",
@@ -245,7 +295,9 @@
         "&",
         "_",
         "·"
-      ]
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
     },
     "caps": {
       "type": "separator"
