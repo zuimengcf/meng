@@ -14,7 +14,7 @@ import kotlinx.serialization.Serializable
  * - [rows]：每行是一个按键 id 列表（按键 id 即 [keys] 的 key），自左向右排列，行为在运行期逐行渲染。
  * - [keys]：按键 id -> 按键规格定义表。每种规格对应一种渲染外观与行为。
  *
- * 配置文件放在 assets 下，构建时会被 `DataManager` 同步到应用数据目录；
+ * 默认配置放在 assets 下；用户副本位于应用外部文件目录，支持设置页导入导出；
  * 运行期优先读取数据目录里的副本（可被用户直接编辑），读取失败则回退到内置原始布局。
  *
  * 支持的按键规格见 [KeySpec]。
@@ -31,7 +31,7 @@ data class KeyboardLayoutConfig(
 @Serializable
 sealed class KeySpec {
 
-    /** 字母键（QWERTY 主键）：主字符 + 可选上滑符号。对应 `AlphabetKey`（宽度固定 0.1f）。 */
+    /** 字母键（QWERTY 主键）：主字符 + 可选上滑符号和长按候选。对应 `AlphabetKey`（宽度固定 0.1f）。 */
     @Serializable
     @SerialName("letter")
     data class Letter(
@@ -41,9 +41,11 @@ sealed class KeySpec {
         val alt: String? = null,
         /** 变体：normal / alt / alternative / accent。 */
         val variant: String = "normal",
+        /** 首项与alt一致；候选原样显示并提交。 */
+        val popup: List<String>? = null,
     ) : KeySpec()
 
-    /** 通用符号/文本键：提交一个 fcitx 字符。对应 `SymbolKey`。 */
+    /** 通用符号/文本键：按字面提交文本。对应 `SymbolKey`。 */
     @Serializable
     @SerialName("symbol")
     data class Symbol(
@@ -58,6 +60,7 @@ sealed class KeySpec {
     data class Comma(
         val width: Float = 0.1f,
         val variant: String = "alternative",
+        val char: String = ",",
     ) : KeySpec()
 
     /** 数字键盘键：提交系统数字/符号 keycode。对应 `NumPadKey`。 */

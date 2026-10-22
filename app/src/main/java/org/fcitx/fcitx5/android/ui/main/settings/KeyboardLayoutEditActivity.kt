@@ -5,6 +5,7 @@
 package org.fcitx.fcitx5.android.ui.main.settings
 
 import android.os.Bundle
+import android.net.Uri
 import android.view.MotionEvent
 import android.view.View
 import android.widget.ArrayAdapter
@@ -14,6 +15,7 @@ import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -28,9 +30,9 @@ import org.fcitx.fcitx5.android.input.keyboard.TextKeyboard
 import org.fcitx.fcitx5.android.input.keyboard.config.KeySpec
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutConfig
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutLoader
-import org.fcitx.fcitx5.android.input.popup.PopupPreset
-import org.fcitx.fcitx5.android.market.LongPressPresetEditor
+import org.fcitx.fcitx5.android.input.keyboard.config.ChineseKeyboardSymbols
 import org.fcitx.fcitx5.android.utils.toast
+import java.io.IOException
 import splitties.dimensions.dp
 
 /**
@@ -56,11 +58,21 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
     /** 当前内存中的配置（rows + keys 表）。 */
     private var config = KeyboardLayoutConfig()
 
-    /** 待落盘的长按候选：主键 → 候选列表。OK 回调暂存，saveConfig() 统一写入映射层。 */
-    private val pendingLongPress = mutableMapOf<String, List<String>>()
+    private var pendingExportConfig: KeyboardLayoutConfig? = null
+
+    private val importDocument = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importConfig(uri)
+    }
+    private val exportDocument = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) writeExport(uri, pendingExportConfig ?: config)
+        pendingExportConfig = null
+    }
 
     companion object {
         const val EXTRA_LAYOUT = "layout_name"
+        private const val IMPORT_LIMIT_BYTES = 1024 * 1024
+        private const val STATE_CONFIG = "keyboard_layout_editor_config"
+        private const val STATE_EXPORT = "keyboard_layout_editor_export"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,11 +93,35 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
         binding.kbEditorBack.setOnClickListener { finish() }
         binding.kbEditorSave.setOnClickListener { saveConfig() }
         binding.kbEditorReload.setOnClickListener { loadConfig() }
+        binding.kbEditorImport.setOnClickListener { importDocument.launch(arrayOf("application/json", "text/plain", "*/*")) }
+        binding.kbEditorExport.setOnClickListener { startExport(config, "${layoutName}-layout.json") }
+        binding.kbEditorExportDefault.setOnClickListener {
+            val defaults = KeyboardLayoutLoader.defaultConfig(layoutName)
+            if (defaults == null) toast("没有可导出的默认配置")
+            else startExport(defaults, "${layoutName}-layout-default.json")
+        }
 
         // 点击预览空白处 → 添加按键菜单（作为「添加」入口，不破坏按键点按编辑）
         binding.kbEditorPreview.setOnClickListener { showActions() }
 
         loadConfig()
+        pendingExportConfig = savedInstanceState?.getString(STATE_EXPORT)?.let {
+            runCatching { KeyboardLayoutLoader.decodeConfig(it) }.getOrNull()
+        }
+        savedInstanceState?.getString(STATE_CONFIG)?.let { saved ->
+            runCatching { KeyboardLayoutLoader.decodeConfig(saved) }.onSuccess {
+                config = it
+                renderPreview()
+            }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        runCatching { outState.putString(STATE_CONFIG, KeyboardLayoutLoader.encodeConfig(config)) }
+        pendingExportConfig?.let { value ->
+            runCatching { outState.putString(STATE_EXPORT, KeyboardLayoutLoader.encodeConfig(value)) }
+        }
+        super.onSaveInstanceState(outState)
     }
 
     /** 键盘高度（px）= 屏高基值 * percent / 100，与真实键盘一致。 */
@@ -103,6 +139,62 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeightPx()
         )
         renderPreview()
+    }
+
+    private fun startExport(value: KeyboardLayoutConfig, filename: String) {
+        try {
+            KeyboardLayoutLoader.encodeConfig(value)
+            pendingExportConfig = value
+            exportDocument.launch(filename)
+        } catch (e: Exception) {
+            toast("无法导出：${e.message}")
+        }
+    }
+
+    private fun importConfig(uri: Uri) {
+        val text = try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                val out = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > IMPORT_LIMIT_BYTES) throw IOException("文件超过 1MiB")
+                    out.write(buffer, 0, count)
+                }
+                out.toByteArray().toString(Charsets.UTF_8)
+            } ?: throw IOException("无法打开文件")
+        } catch (e: Exception) {
+            toast("导入失败：${e.message ?: "无法读取文件"}")
+            return
+        }
+        val decoded = runCatching { KeyboardLayoutLoader.decodeConfig(text) }.getOrElse {
+            toast("导入失败：${it.message ?: "JSON 配置校验不通过"}")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("替换当前内存配置？")
+            .setMessage("导入只替换编辑器中的内存配置，点击保存后才会写入并生效。")
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton("替换") { _, _ ->
+                config = decoded
+                if (config.rows.isEmpty()) config = config.copy(rows = listOf(emptyList()))
+                renderPreview()
+            }.show()
+    }
+
+    private fun writeExport(uri: Uri, value: KeyboardLayoutConfig) {
+        try {
+            val bytes = KeyboardLayoutLoader.encodeConfig(value).toByteArray(Charsets.UTF_8)
+            contentResolver.openOutputStream(uri, "wt")?.use {
+                it.write(bytes)
+            } ?: throw IOException("无法打开目标文件")
+            toast("JSON 导出成功")
+        } catch (e: Exception) {
+            toast("导出失败：${e.message ?: "无法写入文件"}")
+        }
     }
 
     /** 用真实输入法键盘一比一渲染当前布局。 */
@@ -423,10 +515,9 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
         when (spec) {
             is KeySpec.Letter -> {
                 fChar = EditText(this).also { addField(getString(R.string.keyboard_editor_key_char), spec.char, it) }
-                fAlt = EditText(this).also { addField(getString(R.string.keyboard_editor_key_alt), spec.alt ?: "", it) }
-                // 长按候选：胶囊式编辑（强制逐字符分割，不显示分割符）
-                val lpInitial = LongPressPresetEditor.getFor(this, spec.char)?.toList()
-                    ?: PopupPreset[spec.char]?.toList().orEmpty()
+                val lpInitial = ChineseKeyboardSymbols.resolve(spec.char, spec.alt, spec.popup)
+                fAlt = EditText(this).also { addField(getString(R.string.keyboard_editor_key_alt), lpInitial.firstOrNull().orEmpty(), it) }
+                // 编辑器与运行时使用同一候选来源。
                 lpReader = buildLongPressChipEditor(layout, lpInitial)
             }
             is KeySpec.Symbol -> {
@@ -507,26 +598,23 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
             .setView(layout)
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 val variant = fVariant?.let { arrayOf("normal", "alt", "alternative", "accent")[it.selectedItemPosition] } ?: "normal"
-                // 长按候选：暂存 + 立即写映射层（中间层 JSON，不改源码）。空则移除覆盖回退默认
+                val editedAlt = fAlt?.text?.toString()?.takeIf { it.isNotEmpty() }
                 if (spec is KeySpec.Letter) {
                     val items = lpReader?.invoke().orEmpty()
-                    if (items.isEmpty()) {
-                        pendingLongPress.remove(spec.char)
-                        LongPressPresetEditor.removeOverride(this, spec.char)
-                    } else {
-                        pendingLongPress[spec.char] = items
-                        val ok = LongPressPresetEditor.save(this, spec.char, items)
-                        if (!ok) toast(R.string.keyboard_editor_longpress_save_failed)
-                    }
+                    // popup 非空时首项必须等于 alt；若用户清空 alt，则以候选首项为准。
+                    val alt = editedAlt ?: items.firstOrNull() ?: spec.alt
+                    val popup = if (items.isEmpty()) null
+                    else listOf(alt ?: items.first()) + items.filter { it != (alt ?: items.first()) }
+                    val letter = spec.copy(alt = alt, popup = popup)
+                    config = config.copy(keys = config.keys + (keyName to letter))
                 }
                 val newType = fType?.let { typeValues[it.selectedItemPosition] } ?: currentType
                 val newSpec: KeySpec = if (newType != currentType) {
                     // 用户切换了类型：按新类型默认配置整体替换
                     defaultSpecOf(newType)
                 } else when (spec) {
-                    is KeySpec.Letter -> spec.copy(
+                    is KeySpec.Letter -> (config.keys[keyName] as? KeySpec.Letter ?: spec).copy(
                         char = fChar?.text?.toString()?.ifEmpty { spec.char } ?: spec.char,
-                        alt = fAlt?.text?.toString()?.takeIf { it.isNotEmpty() } ?: spec.alt,
                         variant = variant
                     )
                     is KeySpec.Symbol -> spec.copy(
@@ -737,12 +825,6 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
 
     /** 写回外部 JSON。 */
     private fun saveConfig() {
-        // 统一落盘长按候选（含用户只点顶部保存、未点编辑框 OK 的情况）
-        pendingLongPress.forEach { (key, items) ->
-            if (items.isEmpty()) LongPressPresetEditor.removeOverride(this, key)
-            else LongPressPresetEditor.save(this, key, items)
-        }
-        pendingLongPress.clear()
         val ok = KeyboardLayoutLoader.saveConfig(layoutName, config)
         toast(if (ok) R.string.keyboard_editor_saved else R.string.keyboard_editor_save_failed)
     }

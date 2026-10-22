@@ -17,6 +17,7 @@ import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.theme.Theme
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutLoader
+import org.fcitx.fcitx5.android.input.keyboard.config.ChineseKeyboardSymbols
 import org.fcitx.fcitx5.android.input.popup.PopupAction
 import splitties.views.imageResource
 
@@ -39,47 +40,55 @@ class TextKeyboard(
         val Layout: List<List<KeyDef>> get() =
             KeyboardLayoutLoader.loadOrNull(Name) ?: builtinLayout
 
+        private fun defaultLetter(char: String): AlphabetKey {
+            val items = ChineseKeyboardSymbols.candidates.getValue(char.lowercase())
+            return AlphabetKey(char, items.first(), popup = arrayOf(
+                KeyDef.Popup.AltPreview(char, items.first(), rawAlternative = true),
+                KeyDef.Popup.Keyboard.Explicit(items.toTypedArray())
+            ), literalSymbols = true)
+        }
+
         val builtinLayout: List<List<KeyDef>> = listOf(
             listOf(
-                AlphabetKey("Q", "1"),
-                AlphabetKey("W", "2"),
-                AlphabetKey("E", "3"),
-                AlphabetKey("R", "4"),
-                AlphabetKey("T", "5"),
-                AlphabetKey("Y", "6"),
-                AlphabetKey("U", "7"),
-                AlphabetKey("I", "8"),
-                AlphabetKey("O", "9"),
-                AlphabetKey("P", "0")
+                defaultLetter("Q"),
+                defaultLetter("W"),
+                defaultLetter("E"),
+                defaultLetter("R"),
+                defaultLetter("T"),
+                defaultLetter("Y"),
+                defaultLetter("U"),
+                defaultLetter("I"),
+                defaultLetter("O"),
+                defaultLetter("P")
             ),
             listOf(
-                AlphabetKey("A", "@"),
-                AlphabetKey("S", "*"),
-                AlphabetKey("D", "+"),
-                AlphabetKey("F", "-"),
-                AlphabetKey("G", "="),
-                AlphabetKey("H", "/"),
-                AlphabetKey("J", "#"),
-                AlphabetKey("K", "("),
-                AlphabetKey("L", ")")
+                defaultLetter("A"),
+                defaultLetter("S"),
+                defaultLetter("D"),
+                defaultLetter("F"),
+                defaultLetter("G"),
+                defaultLetter("H"),
+                defaultLetter("J"),
+                defaultLetter("K"),
+                defaultLetter("L")
             ),
             listOf(
                 CapsKey(),
-                AlphabetKey("Z", "'"),
-                AlphabetKey("X", ":"),
-                AlphabetKey("C", "\""),
-                AlphabetKey("V", "?"),
-                AlphabetKey("B", "!"),
-                AlphabetKey("N", "~"),
-                AlphabetKey("M", "\\"),
+                defaultLetter("Z"),
+                defaultLetter("X"),
+                defaultLetter("C"),
+                defaultLetter("V"),
+                defaultLetter("B"),
+                defaultLetter("N"),
+                defaultLetter("M"),
                 BackspaceKey()
             ),
             listOf(
                 LayoutSwitchKey("?123", ""),
-                CommaKey(0.1f, KeyDef.Appearance.Variant.Alternative),
+                CommaKey(0.1f, KeyDef.Appearance.Variant.Alternative, "，"),
                 LanguageKey(),
                 SpaceKey(),
-                SymbolKey(".", 0.1f, KeyDef.Appearance.Variant.Alternative),
+                SymbolKey("。", 0.1f, KeyDef.Appearance.Variant.Alternative),
                 ReturnKey()
             )
         )
@@ -88,9 +97,9 @@ class TextKeyboard(
     val caps: ImageKeyView? by lazy { findViewById(R.id.button_caps) }
     val backspace: ImageKeyView by lazy { findViewById(R.id.button_backspace) }
     val quickphrase: ImageKeyView by lazy { findViewById(R.id.button_quickphrase) }
-    val lang: ImageKeyView by lazy { findViewById(R.id.button_lang) }
-    val space: TextKeyView by lazy { findViewById(R.id.button_space) }
-    val `return`: ImageKeyView by lazy { findViewById(R.id.button_return) }
+    val lang: ImageKeyView? by lazy { findViewById(R.id.button_lang) }
+    val space: TextKeyView? by lazy { findViewById(R.id.button_space) }
+    val `return`: ImageKeyView? by lazy { findViewById(R.id.button_return) }
 
     private val showLangSwitchKey = AppPrefs.getInstance().keyboard.showLangSwitchKey
 
@@ -165,7 +174,7 @@ class TextKeyboard(
     }
 
     override fun onReturnDrawableUpdate(returnDrawable: Int) {
-        `return`.img.imageResource = returnDrawable
+        `return`?.img?.imageResource = returnDrawable
     }
 
     override fun onPunctuationUpdate(mapping: Map<String, String>) {
@@ -174,7 +183,7 @@ class TextKeyboard(
     }
 
     override fun onInputMethodUpdate(ime: InputMethodEntry) {
-        space.mainText.text = buildString {
+        space?.mainText?.text = buildString {
             append(ime.displayName)
             ime.subMode.run { label.ifEmpty { name.ifEmpty { null } } }?.let { append(" ($it)") }
         }
@@ -244,7 +253,7 @@ class TextKeyboard(
     }
 
     private fun updateLangSwitchKey(visible: Boolean) {
-        lang.visibility = if (visible) View.VISIBLE else View.GONE
+        lang?.visibility = if (visible) View.VISIBLE else View.GONE
     }
 
     private fun updateAlphabetKeys() {
@@ -261,13 +270,13 @@ class TextKeyboard(
         textKeys.forEach {
             if (it is AltTextKeyView) {
                 it.def as KeyDef.Appearance.AltText
-                it.altText.text = transformPunctuation(it.def.altText)
+                it.altText.text = if (it.def.rawAltText) it.def.altText else transformPunctuation(it.def.altText)
             } else {
                 it.def as KeyDef.Appearance.Text
                 // rawText=true 的键（SymbolKey）跳过标点映射，保持 WYSIWYG
                 if (it.def.rawText) return@forEach
                 it.mainText.text = it.def.displayText.let { str ->
-                    if (str[0].run { isLetter() || isWhitespace() }) return@forEach
+                    if (str.isEmpty() || str[0].run { isLetter() || isWhitespace() }) return@forEach
                     transformPunctuation(str)
                 }
             }

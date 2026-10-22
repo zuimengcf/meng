@@ -305,7 +305,7 @@ abstract class BaseKeyboard(
                                         val triggered = swipeSymbolDirection.checkY(event.totalY)
                                         val text = if (triggered) it.alternative else it.content
                                         onPopupAction(
-                                            PopupAction.PreviewUpdateAction(view.id, text, it.raw)
+                                            PopupAction.PreviewUpdateAction(view.id, text, it.raw || (triggered && it.rawAlternative))
                                         )
                                     }
                                     GestureType.Up -> {

@@ -22,6 +22,7 @@ import org.fcitx.fcitx5.android.input.dependency.fcitx
 import org.fcitx.fcitx5.android.input.dependency.inputMethodService
 import org.fcitx.fcitx5.android.input.dependency.theme
 import org.fcitx.fcitx5.android.input.picker.PickerWindow
+import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutLoader
 import org.fcitx.fcitx5.android.input.popup.PopupActionListener
 import org.fcitx.fcitx5.android.input.popup.PopupComponent
 import org.fcitx.fcitx5.android.input.wm.EssentialWindow
@@ -65,11 +66,12 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
 
     private lateinit var keyboardView: FrameLayout
 
+    private var layoutRevision = KeyboardLayoutLoader.revision
     private val keyboards: HashMap<String, BaseKeyboard> by lazy {
         hashMapOf(
             TextKeyboard.Name to TextKeyboard(context, theme),
             NumberKeyboard.Name to NumberKeyboard(context, theme)
-        )
+        ).also { layoutRevision = KeyboardLayoutLoader.revision }
     }
     private var currentKeyboardName = ""
     private var lastSymbolType: String by AppPrefs.getInstance().internal.lastSymbolLayout
@@ -146,7 +148,20 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
         }
     }
 
+    private fun refreshSavedLayouts() {
+        if (!::keyboardView.isInitialized || layoutRevision == KeyboardLayoutLoader.revision) return
+        val target = currentKeyboardName.ifEmpty { TextKeyboard.Name }
+        popup.dismissAll()
+        detachCurrentLayout()
+        keyboards.clear()
+        keyboards[TextKeyboard.Name] = TextKeyboard(context, theme)
+        keyboards[NumberKeyboard.Name] = NumberKeyboard(context, theme)
+        layoutRevision = KeyboardLayoutLoader.revision
+        attachLayout(target)
+    }
+
     override fun onStartInput(info: EditorInfo, capFlags: CapabilityFlags) {
+        refreshSavedLayouts()
         val targetLayout = when (info.inputType and InputType.TYPE_MASK_CLASS) {
             InputType.TYPE_CLASS_NUMBER -> NumberKeyboard.Name
             InputType.TYPE_CLASS_PHONE -> NumberKeyboard.Name
@@ -168,6 +183,7 @@ class KeyboardWindow : InputWindow.SimpleInputWindow<KeyboardWindow>(), Essentia
     }
 
     override fun onAttached() {
+        refreshSavedLayouts()
         currentKeyboard?.let {
             it.keyActionListener = keyActionListener
             it.popupActionListener = popupActionListener

@@ -66,10 +66,10 @@ class NumberKeyboard(
 
     val backspace: ImageKeyView by lazy { findViewById(R.id.button_backspace) }
     val space: TextKeyView by lazy { findViewById(R.id.button_mini_space) }
-    val `return`: ImageKeyView by lazy { findViewById(R.id.button_return) }
+    val `return`: ImageKeyView? by lazy { findViewById(R.id.button_return) }
 
     override fun onReturnDrawableUpdate(returnDrawable: Int) {
-        `return`.img.imageResource = returnDrawable
+        `return`?.img?.imageResource = returnDrawable
     }
 
     @SuppressLint("MissingSuperCall")

@@ -64,6 +64,7 @@ open class KeyDef(
             border: Border = Border.Default,
             margin: Boolean = true,
             viewId: Int = -1,
+            val rawAltText: Boolean = false,
         ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId)
 
         class Image(
@@ -91,8 +92,9 @@ open class KeyDef(
             variant: Variant = Variant.Normal,
             border: Border = Border.Default,
             margin: Boolean = true,
-            viewId: Int = -1
-        ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId)
+            viewId: Int = -1,
+            rawText: Boolean = false
+        ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId, rawText = rawText)
     }
 
     sealed class Behavior {
@@ -120,7 +122,7 @@ open class KeyDef(
     sealed class Popup {
         open class Preview(val content: String, val raw: Boolean = false) : Popup()
 
-        class AltPreview(content: String, val alternative: String) : Preview(content)
+        class AltPreview(content: String, val alternative: String, val rawAlternative: Boolean = false) : Preview(content)
 
         sealed class Keyboard : Popup() {
             data class Preset(val label: String, val transformPunctuation: Boolean = false) :

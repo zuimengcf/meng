@@ -130,9 +130,10 @@ class PopupComponent :
                 // 优先读取用户自定义的长按选择器（中间层），没有覆盖回退内置默认
                 val preset = LongPressPresetEditor.getFor(context, keyboard.label) ?: return
                 keys = preset
-                labels = if (keyboard.transformPunctuation && punctuation.enabled) {
-                    Array(keys.size) { punctuation.transform(keys[it]) }
-                } else keys
+                if (keyboard.transformPunctuation && punctuation.enabled) {
+                    keys = Array(keys.size) { punctuation.transform(keys[it]) }
+                }
+                labels = keys
             }
             is KeyDef.Popup.Keyboard.Explicit -> {
                 keys = keyboard.items

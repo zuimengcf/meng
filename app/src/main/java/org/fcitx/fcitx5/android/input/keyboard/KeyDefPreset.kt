@@ -44,20 +44,22 @@ class AlphabetKey(
     val character: String,
     val punctuation: String,
     variant: Variant = Variant.Normal,
-    popup: Array<Popup>? = null
+    popup: Array<Popup>? = null,
+    val literalSymbols: Boolean = false
 ) : KeyDef(
     Appearance.AltText(
         displayText = character,
         altText = punctuation,
+        rawAltText = literalSymbols,
         textSize = 23f,
         variant = variant
     ),
     setOf(
         Behavior.Press(KeyAction.FcitxKeyAction(character)),
-        Behavior.Swipe(KeyAction.FcitxKeyAction(punctuation))
+        Behavior.Swipe(if (literalSymbols) KeyAction.CommitAction(punctuation) else KeyAction.FcitxKeyAction(punctuation))
     ),
     popup ?: arrayOf(
-        Popup.AltPreview(character, punctuation),
+        Popup.AltPreview(character, punctuation, rawAlternative = literalSymbols),
         Popup.Keyboard.Preset(character)
     )
 )
@@ -158,19 +160,21 @@ class QuickPhraseKey : KeyDef(
 class CommaKey(
     percentWidth: Float,
     variant: Variant,
+    val character: String = ",",
 ) : KeyDef(
     Appearance.ImageText(
-        displayText = ",",
+        displayText = character,
+        rawText = true,
         textSize = 23f,
         percentWidth = percentWidth,
         variant = variant,
         src = R.drawable.ic_baseline_tag_faces_24
     ),
     setOf(
-        Behavior.Press(KeyAction.FcitxKeyAction(","))
+        Behavior.Press(KeyAction.CommitAction(character))
     ),
     arrayOf(
-        Popup.Preview(","),
+        Popup.Preview(character, raw = true),
         Popup.Menu(
             arrayOf(
                 Popup.Menu.Item(

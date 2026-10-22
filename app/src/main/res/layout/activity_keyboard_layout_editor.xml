@@ -57,6 +57,47 @@
             android:text="@string/save" />
     </LinearLayout>
 
+    <!-- 文件操作单独成行，窄屏/大字体下可横向滚动。 -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+        <Button
+            android:id="@+id/kb_editor_import"
+            style="?android:attr/buttonBarNeutralButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:text="导入JSON" />
+
+        <Button
+            android:id="@+id/kb_editor_export"
+            style="?android:attr/buttonBarNeutralButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:text="导出JSON" />
+
+        <Button
+            android:id="@+id/kb_editor_export_default"
+            style="?android:attr/buttonBarNeutralButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="6dp"
+            android:text="导出默认JSON" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
