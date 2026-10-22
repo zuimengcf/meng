@@ -222,10 +222,6 @@
       "char": "z",
       "alt": "'",
       "popup": [
-        "「",
-        "」",
-        "『",
-        "』",
         "’"
       ],
       "popup_letter_offset": 1,
@@ -270,7 +266,8 @@
       "char": "b",
       "alt": "!",
       "popup": [
-        "￥"
+        "￥",
+        "·"
       ],
       "popup_letter_offset": 1,
       "popup_shift_x": 0
@@ -293,8 +290,7 @@
       "popup": [
         "\\",
         "&",
-        "_",
-        "·"
+        "_"
       ],
       "popup_letter_offset": 1,
       "popup_shift_x": 0

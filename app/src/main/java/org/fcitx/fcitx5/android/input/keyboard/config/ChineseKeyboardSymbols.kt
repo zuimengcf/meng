@@ -26,13 +26,13 @@ object ChineseKeyboardSymbols {
         "j" to listOf("#", "【", "】"),
         "k" to listOf("（", "《", "{"),
         "l" to listOf("）", "》", "}"),
-        "z" to listOf("'", "「", "」", "『", "』", "’"),
+        "z" to listOf("'", "’"),
         "x" to listOf(":", "×", "%", "‰"),
         "c" to listOf("\"", "”", "〔", "〕"),
         "v" to listOf("?", "……"),
-        "b" to listOf("!", "￥"),
+        "b" to listOf("!", "￥", "·"),
         "n" to listOf("~", "—", "——"),
-        "m" to listOf(".", "\\", "&", "_", "·")
+        "m" to listOf(".", "\\", "&", "_")
     )
 
     /** M 的英文點號不隨中英文模式轉換；其他鍵（含獨立句號鍵）維持原策略。 */
@@ -44,21 +44,35 @@ object ChineseKeyboardSymbols {
     fun displayedCandidates(key: String, items: List<String>, chinese: Boolean): List<String> =
         items.map { display(key, it, chinese) }.distinct()
 
+    /** 还原本轮变更前的中文多行模板；英文布局的旧符号保持不变。 */
+    fun previousMultiRowTemplate(defaults: KeyboardLayoutConfig): KeyboardLayoutConfig {
+        if (defaults.keys["caps"] != KeySpec.Separator) return defaults
+        val oldPopups = mapOf(
+            "s" to listOf("；"),
+            "b" to listOf("￥"),
+            "m" to listOf("\\", "&", "_", "·"),
+            "z" to listOf("「", "」", "『", "』", "’")
+        )
+        return defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
+            if (key is KeySpec.Letter && id in oldPopups) key.copy(popup = oldPopups.getValue(id)) else key
+        })
+    }
+
     /** 仅识别原样出厂副本；旧版及被拒版本均只在加载时升级，不覆盖自定义文件。 */
     fun upgradeTextTemplate(custom: KeyboardLayoutConfig, defaults: KeyboardLayoutConfig): KeyboardLayoutConfig {
+        val previous = previousMultiRowTemplate(defaults)
+        if (custom == previous) return defaults
         // 被打回版本只平移了 P/L 的整個彈窗；原樣副本恢復為字母左鄰、整體不平移。
-        val rejectedPopupShift = defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
+        val rejectedPopupShift = previous.copy(keys = previous.keys.mapValues { (id, key) ->
             if (id in listOf("p", "l") && key is KeySpec.Letter)
                 key.copy(popupLetterOffset = 1, popupShiftX = -1) else key
         })
         if (custom == rejectedPopupShift) return defaults
         // 上一版沒有座標欄位，Z 的配對符號也尚未重新分組。
-        val previousPositions = defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
-            if (key is KeySpec.Letter) key.copy(
-                popupLetterOffset = 1, popupShiftX = 0,
+        val previousPositions = previous.copy(keys = previous.keys.mapValues { (id, key) ->
+            if (key is KeySpec.Letter) key.copy(popupLetterOffset = 1, popupShiftX = 0,
                 popup = if (id == "z" && defaults.keys["caps"] == KeySpec.Separator)
-                    listOf("’", "「", "」", "『", "』") else key.popup
-            ) else key
+                    listOf("’", "「", "」", "『", "』") else key.popup) else key
         })
         if (custom == previousPositions) return defaults
         val g = previousPositions.keys["g"] as? KeySpec.Letter ?: return custom

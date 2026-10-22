@@ -29,7 +29,7 @@ import kotlin.math.roundToInt
  * @param theme [Theme]
  * @param outerBounds bound [Rect] of [PopupComponent] root view.
  * @param triggerBounds bound [Rect] of popup trigger view. Used to calculate free space of both sides and
- * determine column order. See [focusColumn] and [columnOrder].
+ * determine single-row column order. See [focusColumn] and [layout].
  * @param onDismissSelf callback when popup keyboard wants to close
  * @param radius popup keyboard and key radius
  * @param keyWidth key width in popup keyboard
@@ -61,6 +61,7 @@ class PopupKeyboardUi(
             text = this@PopupKeyUi.text
             scaleMode = AutoScaleTextView.Mode.Proportional
             textSize = 23f
+            maxLines = 1
             setTextColor(theme.keyTextColor)
         }
 
@@ -81,8 +82,12 @@ class PopupKeyboardUi(
         setColor(theme.genericActiveBackgroundColor)
     }
 
+    // 显示与提交按同一原始索引筛选；旧自定义列表再长也不能触发第二行。
+    private val shownIndices = PopupKeyboardCandidates.indices(keys.toList(), if (letterOffset != null) 2 else 1)
+    private val shownKeys = shownIndices.map { keys[it] }.toTypedArray()
+    private val shownLabels = shownIndices.map { labels[it] }.toTypedArray()
     private val layout = PopupKeyboardLayout.create(
-        keys.toList(), keyWidth, outerBounds.left, outerBounds.right,
+        shownKeys.toList(), keyWidth, outerBounds.left, outerBounds.right,
         triggerBounds.left, triggerBounds.right, letterOffset, shiftX
     )
     private val keyWidth = layout.keyWidth
@@ -92,41 +97,13 @@ class PopupKeyboardUi(
     private val focusRow = 0
     private val focusColumn = layout.focusColumn
 
-    /**
-     * Offset on X axis made up of 2 parts:
-     *  1. from trigger view bounds left to popup entry view left
-     *  2. from left-most column to initial focused column
-     *
-     * Offset on Y axis made up of 2 parts as well:
-     *  1. from trigger view top to popup entry view top
-     *  2. from top-most row to initial focused row (bottom row)
-     *
-     * ```
-     *                    c───┬───┬───┐
-     *                    │   │ 4 │ 5 │
-     *                 ┌─ ├───p───┼───┤ ─┐
-     *   popupKeyHeight│  │ 3 │ 1 │ 2 │  │
-     *                 └─ └───┼───┼───┘  │
-     *                        │   │      │popupHeight
-     *                 ┌───── │o─┐│      │
-     *  bounds.height()│      ││a││      │
-     *                 └───── └┴─┴┘ ─────┘
-     * ```
-     * o: trigger view top-left origin
-     *
-     * p: popup preview ([PopupEntryUi]) top-left origin
-     *
-     * c: container view top-left origin
-     *
-     * Applying only `1.` parts of both X and Y offset, the origin should transform from `o` to `p`.
-     * `2.` parts of both offset transform it from `p` to `c`.
-     */
+    // 单行位置相对于原按键；所有格位由 layout 统一提供。
     override val offsetX = layout.offsetX
     override val offsetY = (triggerBounds.height() - popupHeight) - (keyHeight * (rowCount - 1))
 
     private var focusedIndex = keyOrders[focusRow][focusColumn]
 
-    private val keyUis = labels.map {
+    private val keyUis = shownLabels.map {
         PopupKeyUi(ctx, theme, it)
     }
 
@@ -191,7 +168,7 @@ class PopupKeyboardUi(
     }
 
     override fun onTrigger(): KeyAction? {
-        val key = keys.getOrNull(focusedIndex) ?: return null
+        val key = shownKeys.getOrNull(focusedIndex) ?: return null
         return KeyAction.CommitAction(key)
     }
 
