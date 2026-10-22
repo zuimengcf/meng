@@ -18,6 +18,8 @@ import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.theme.Theme
 import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardLayoutLoader
 import org.fcitx.fcitx5.android.input.keyboard.config.ChineseKeyboardSymbols
+import org.fcitx.fcitx5.android.input.keyboard.config.KeyboardPunctuationMode
+import org.fcitx.fcitx5.android.market.LongPressPresetEditor
 import org.fcitx.fcitx5.android.input.popup.PopupAction
 import splitties.views.imageResource
 
@@ -85,10 +87,10 @@ class TextKeyboard(
             ),
             listOf(
                 LayoutSwitchKey("?123", ""),
-                CommaKey(0.1f, KeyDef.Appearance.Variant.Alternative, "，"),
+                CommaKey(0.1f, KeyDef.Appearance.Variant.Alternative, ","),
                 LanguageKey(),
                 SpaceKey(),
-                SymbolKey("。", 0.1f, KeyDef.Appearance.Variant.Alternative),
+                SymbolKey(".", 0.1f, KeyDef.Appearance.Variant.Alternative),
                 ReturnKey()
             )
         )
@@ -128,8 +130,14 @@ class TextKeyboard(
         }
     }
 
+    // 編輯器預設預覽中文；實際鍵盤由引擎subMode即時更新。
+    private var chinesePunctuation = true
+    private fun modePunctuation(text: String) = KeyboardPunctuationMode.display(text, chinesePunctuation)
+
     private var punctuationMapping: Map<String, String> = mapOf()
     private fun transformPunctuation(p: String) = punctuationMapping.getOrDefault(p, p)
+
+    init { updatePunctuationKeys() }
 
     override fun onAction(action: KeyAction, source: KeyActionListener.Source) {
         var transformed = action
@@ -161,6 +169,12 @@ class TextKeyboard(
                     }
                 }
             }
+            is KeyAction.CommitAction -> {
+                // 彈窗候選已按當前模式生成；直接鍵/滑動在這裡用同一策略提交。
+                if (source == KeyActionListener.Source.Keyboard) {
+                    transformed = action.copy(text = modePunctuation(action.text))
+                }
+            }
             is KeyAction.CapsAction -> switchCapsState(action.lock)
             else -> {}
         }
@@ -171,6 +185,7 @@ class TextKeyboard(
         capsState = CapsState.None
         updateCapsButtonIcon()
         updateAlphabetKeys()
+        updatePunctuationKeys()
     }
 
     override fun onReturnDrawableUpdate(returnDrawable: Int) {
@@ -183,6 +198,16 @@ class TextKeyboard(
     }
 
     override fun onInputMethodUpdate(ime: InputMethodEntry) {
+        val chinese = KeyboardPunctuationMode.isChinese(
+            ime.languageCode, ime.addon, ime.uniqueName,
+            ime.subMode.icon, ime.subMode.label, ime.subMode.name, ime.icon
+        )
+        if (chinese != chinesePunctuation) {
+            chinesePunctuation = chinese
+            // 取消舊模式彈窗，避免按住候選時切換模式後提交舊內容。
+            textKeys.forEach { super.onPopupAction(PopupAction.DismissAction(it.id)) }
+        }
+        updatePunctuationKeys()
         space?.mainText?.text = buildString {
             append(ime.displayName)
             ime.subMode.run { label.ifEmpty { name.ifEmpty { null } } }?.let { append(" ($it)") }
@@ -198,26 +223,38 @@ class TextKeyboard(
         return transformPunctuation(c)
     }
 
+    private fun previewContent(viewId: Int, content: String, raw: Boolean): String {
+        val appearance = findViewById<KeyView>(viewId)?.def as? KeyDef.Appearance.Text
+        // 隔音符是引擎按鍵，不是中文引號，不參與模式轉換。
+        if (appearance?.modeAwarePunctuation == true && (raw || content.none { it.isLetter() })) {
+            return modePunctuation(content)
+        }
+        return if (raw) content else transformPopupPreview(content)
+    }
+
     override fun onPopupAction(action: PopupAction) {
         val newAction = when (action) {
             is PopupAction.PreviewAction -> action.copy(
-                content = if (action.raw) action.content else transformPopupPreview(action.content)
+                content = previewContent(action.viewId, action.content, action.raw)
             )
             is PopupAction.PreviewUpdateAction -> action.copy(
-                content = if (action.raw) action.content else transformPopupPreview(action.content)
+                content = previewContent(action.viewId, action.content, action.raw)
             )
             is PopupAction.ShowKeyboardAction -> {
-                when (action.keyboard) {
+                val items = when (val keyboard = action.keyboard) {
+                    is KeyDef.Popup.Keyboard.Explicit -> keyboard.items.toList()
                     is KeyDef.Popup.Keyboard.Preset -> {
-                        val label = action.keyboard.label
-                        if (label.length == 1 && label[0].isLetter())
-                            action.copy(
-                                keyboard = action.keyboard.copy(label = transformAlphabet(label))
-                            )
-                        else action
+                        val label = keyboard.label.let {
+                            if (it.length == 1 && it[0].isLetter()) transformAlphabet(it) else it
+                        }
+                        LongPressPresetEditor.getFor(context, label)?.toList()
                     }
-                    is KeyDef.Popup.Keyboard.Explicit -> action
                 }
+                if (items.isNullOrEmpty()) action else action.copy(
+                    keyboard = KeyDef.Popup.Keyboard.Explicit(
+                        KeyboardPunctuationMode.candidates(items, chinesePunctuation).toTypedArray()
+                    )
+                )
             }
             else -> action
         }
@@ -270,10 +307,14 @@ class TextKeyboard(
         textKeys.forEach {
             if (it is AltTextKeyView) {
                 it.def as KeyDef.Appearance.AltText
-                it.altText.text = if (it.def.rawAltText) it.def.altText else transformPunctuation(it.def.altText)
+                it.altText.text = if (it.def.modeAwarePunctuation) modePunctuation(it.def.altText)
+                    else if (it.def.rawAltText) it.def.altText else transformPunctuation(it.def.altText)
             } else {
                 it.def as KeyDef.Appearance.Text
-                // rawText=true 的键（SymbolKey）跳过标点映射，保持 WYSIWYG
+                if (it.def.modeAwarePunctuation) {
+                    it.mainText.text = modePunctuation(it.def.displayText)
+                    return@forEach
+                }
                 if (it.def.rawText) return@forEach
                 it.mainText.text = it.def.displayText.let { str ->
                     if (str.isEmpty() || str[0].run { isLetter() || isWhitespace() }) return@forEach

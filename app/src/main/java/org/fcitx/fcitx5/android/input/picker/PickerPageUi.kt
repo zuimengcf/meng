@@ -19,7 +19,6 @@ import org.fcitx.fcitx5.android.input.keyboard.CustomGestureView
 import org.fcitx.fcitx5.android.input.keyboard.CustomGestureView.OnGestureListener
 import org.fcitx.fcitx5.android.input.keyboard.ImageKeyView
 import org.fcitx.fcitx5.android.input.keyboard.KeyAction.CommitAction
-import org.fcitx.fcitx5.android.input.keyboard.KeyAction.FcitxKeyAction
 import org.fcitx.fcitx5.android.input.keyboard.KeyAction.SymAction
 import org.fcitx.fcitx5.android.input.keyboard.KeyActionListener
 import org.fcitx.fcitx5.android.input.keyboard.KeyActionListener.Source
@@ -302,8 +301,8 @@ class PickerPageUi(
     private fun onPopupTrigger(viewId: Int): Boolean {
         val triggerAction = PopupAction.TriggerAction(viewId)
         onPopupAction(triggerAction)
-        val action = triggerAction.outAction as? FcitxKeyAction ?: return false
-        onItemClick(action.act)
+        val text = triggerAction.outAction.pickerCommitText() ?: return false
+        onItemClick(text)
         onPopupAction(PopupAction.DismissAction(viewId))
         return true
     }

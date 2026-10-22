@@ -143,50 +143,51 @@
     "a": {
       "type": "letter",
       "char": "a",
-      "alt": "，",
+      "alt": "@",
       "popup": [
+        "@",
         "，",
-        "、",
-        "@"
+        "、"
       ]
     },
     "s": {
       "type": "letter",
       "char": "s",
-      "alt": "。",
+      "alt": "*",
       "popup": [
+        "*",
         "。",
-        "；",
-        "*"
+        "；"
       ]
     },
     "d": {
       "type": "letter",
       "char": "d",
-      "alt": "、",
+      "alt": "+",
       "popup": [
-        "、",
         "+",
+        "、",
         "±"
       ]
     },
     "f": {
       "type": "letter",
       "char": "f",
-      "alt": "；",
+      "alt": "-",
       "popup": [
+        "-",
         "；",
         "：",
-        "-"
+        "——"
       ]
     },
     "g": {
       "type": "letter",
       "char": "g",
-      "alt": "：",
+      "alt": "=",
       "popup": [
-        "：",
         "=",
+        "：",
         "≠",
         "≈"
       ]
@@ -194,117 +195,118 @@
     "h": {
       "type": "letter",
       "char": "h",
-      "alt": "（",
+      "alt": "/",
       "popup": [
-        "（",
-        "【",
-        "{"
+        "/",
+        "÷",
+        "、"
       ]
     },
     "j": {
       "type": "letter",
       "char": "j",
-      "alt": "）",
+      "alt": "#",
       "popup": [
-        "）",
-        "】",
-        "}"
+        "#",
+        "【",
+        "】"
       ]
     },
     "k": {
       "type": "letter",
       "char": "k",
-      "alt": "《",
+      "alt": "（",
       "popup": [
+        "（",
         "《",
         "〈",
-        "（",
         "【",
-        "["
+        "[",
+        "{"
       ]
     },
     "l": {
       "type": "letter",
       "char": "l",
-      "alt": "》",
+      "alt": "）",
       "popup": [
+        "）",
         "》",
         "〉",
-        "）",
         "】",
-        "]"
+        "]",
+        "}"
       ]
     },
     "z": {
       "type": "letter",
       "char": "z",
-      "alt": "‘",
+      "alt": "'",
       "popup": [
+        "'",
         "‘",
-        "’",
-        "'"
+        "’"
       ]
     },
     "x": {
       "type": "letter",
       "char": "x",
-      "alt": "’",
+      "alt": ":",
       "popup": [
-        "’",
-        "‘",
-        "："
+        ":",
+        "：",
+        "；",
+        "×"
       ]
     },
     "c": {
       "type": "letter",
       "char": "c",
-      "alt": "“",
+      "alt": "\"",
       "popup": [
+        "\"",
         "“",
-        "”",
-        "\""
+        "”"
       ]
     },
     "v": {
       "type": "letter",
       "char": "v",
-      "alt": "”",
+      "alt": "?",
       "popup": [
-        "”",
-        "“",
+        "?",
         "？"
       ]
     },
     "b": {
       "type": "letter",
       "char": "b",
-      "alt": "？",
+      "alt": "!",
       "popup": [
-        "？",
+        "!",
         "！"
       ]
     },
     "n": {
       "type": "letter",
       "char": "n",
-      "alt": "！",
+      "alt": "~",
       "popup": [
-        "！",
+        "~",
         "～",
-        "~"
+        "！"
       ]
     },
     "m": {
       "type": "letter",
       "char": "m",
-      "alt": "……",
+      "alt": "\\",
       "popup": [
+        "\\",
         "……",
         "——",
         "·",
         "/",
-        "\\",
-        "#",
         "&",
         "_"
       ]
@@ -327,7 +329,7 @@
       "type": "comma",
       "width": 0.1,
       "variant": "alternative",
-      "char": "，"
+      "char": ","
     },
     "lang": {
       "type": "lang"
@@ -337,7 +339,7 @@
     },
     "dot": {
       "type": "symbol",
-      "char": "。",
+      "char": ".",
       "width": 0.1,
       "variant": "alternative"
     },

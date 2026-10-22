@@ -29,7 +29,8 @@ class SymbolKey(
         textSize = 23f,
         percentWidth = percentWidth,
         variant = variant,
-        rawText = true
+        rawText = true,
+        modeAwarePunctuation = true
     ),
     setOf(
         Behavior.Press(KeyAction.CommitAction(symbol))
@@ -165,6 +166,7 @@ class CommaKey(
     Appearance.ImageText(
         displayText = character,
         rawText = true,
+        modeAwarePunctuation = true,
         textSize = 23f,
         percentWidth = percentWidth,
         variant = variant,

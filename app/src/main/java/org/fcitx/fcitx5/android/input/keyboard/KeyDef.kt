@@ -47,7 +47,9 @@ open class KeyDef(
              * `true` = 此键的文字不被 punctuationMapping 变换（WYSIWYG：所见即所得）。
              * SymbolKey 用此标记，确保显示、预览、提交三者一致。
              */
-            val rawText: Boolean = false
+            val rawText: Boolean = false,
+            /** 僅由鍵盤模式策略轉換；不再交給輸入引擎二次替換。 */
+            val modeAwarePunctuation: Boolean = false
         ) : Appearance(percentWidth, variant, border, margin, viewId, soundEffect)
 
         class AltText(
@@ -65,7 +67,7 @@ open class KeyDef(
             margin: Boolean = true,
             viewId: Int = -1,
             val rawAltText: Boolean = false,
-        ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId)
+        ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId, modeAwarePunctuation = rawAltText)
 
         class Image(
             @DrawableRes
@@ -93,8 +95,9 @@ open class KeyDef(
             border: Border = Border.Default,
             margin: Boolean = true,
             viewId: Int = -1,
-            rawText: Boolean = false
-        ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId, rawText = rawText)
+            rawText: Boolean = false,
+            modeAwarePunctuation: Boolean = false
+        ) : Text(displayText, textSize, textStyle, percentWidth, variant, border, margin, viewId, rawText = rawText, modeAwarePunctuation = modeAwarePunctuation)
     }
 
     sealed class Behavior {
