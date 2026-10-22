@@ -41,7 +41,7 @@ sealed class KeySpec {
         val alt: String? = null,
         /** 变体：normal / alt / alternative / accent。 */
         val variant: String = "normal",
-        /** 首项与alt一致；候选原样显示并提交。 */
+        /** 额外长按候选；null 使用旧版 fallback，[] 表示无额外候选。 */
         val popup: List<String>? = null,
     ) : KeySpec()
 

@@ -601,10 +601,9 @@ class KeyboardLayoutEditActivity : AppCompatActivity() {
                 val editedAlt = fAlt?.text?.toString()?.takeIf { it.isNotEmpty() }
                 if (spec is KeySpec.Letter) {
                     val items = lpReader?.invoke().orEmpty()
-                    // popup 非空时首项必须等于 alt；若用户清空 alt，则以候选首项为准。
-                    val alt = editedAlt ?: items.firstOrNull() ?: spec.alt
-                    val popup = if (items.isEmpty()) null
-                    else listOf(alt ?: items.first()) + items.filter { it != (alt ?: items.first()) }
+                    // popup 只保存额外候选；空列表保留为 []，不恢复为旧版 null。
+                    val alt = editedAlt ?: spec.alt
+                    val popup = items.filter { it != alt }.distinct()
                     val letter = spec.copy(alt = alt, popup = popup)
                     config = config.copy(keys = config.keys + (keyName to letter))
                 }
