@@ -8,6 +8,7 @@ package org.fcitx.fcitx5.android.input.candidates.horizontal
 import android.content.res.Configuration
 import android.graphics.drawable.ShapeDrawable
 import android.graphics.drawable.shapes.RectShape
+import android.view.inputmethod.EditorInfo
 import androidx.core.view.updateLayoutParams
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.flexbox.FlexboxLayoutManager
@@ -15,6 +16,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import org.fcitx.fcitx5.android.R
+import org.fcitx.fcitx5.android.core.CapabilityFlags
 import org.fcitx.fcitx5.android.core.CandidateWord
 import org.fcitx.fcitx5.android.core.FcitxEvent
 import org.fcitx.fcitx5.android.daemon.launchOnReady
@@ -55,6 +57,9 @@ class HorizontalCandidateComponent :
     /** 候选栏当前是否正在展示计算器候选。 */
     var calculatorShowing = false
         private set
+
+    /** 计算候选只覆盖显示，不丢弃期间收到的普通候选。 */
+    private var lastNativeCandidates = FcitxEvent.CandidateListEvent.Data(total = 0)
 
     private val fillStyle by AppPrefs.getInstance().keyboard.horizontalCandidateStyle
     private val maxSpanCountPref by lazy {
@@ -189,7 +194,13 @@ class HorizontalCandidateComponent :
         }
     }
 
+    override fun onStartInput(info: EditorInfo, capFlags: CapabilityFlags) {
+        // 新输入会话不能重放上一个编辑器的候选。
+        lastNativeCandidates = FcitxEvent.CandidateListEvent.Data(total = 0)
+    }
+
     override fun onCandidateUpdate(data: FcitxEvent.CandidateListEvent.Data) {
+        lastNativeCandidates = data.copy(candidates = data.candidates.copyOf())
         // 计算器激活时，用计算器结果候选覆盖 fcitx 候选
         if (calculatorShowing) {
             return
@@ -229,16 +240,14 @@ class HorizontalCandidateComponent :
      * 由按键分发（CommonKeyActionListener）在计算器激活时调用。
      */
     fun showCalculatorCandidate() {
-        calculatorShowing = true
         val expr = calculator.expressionText()
         val answer = calculator.result()
         if (expr == null || answer == null) {
-            adapter.updateCandidates(emptyArray(), 0)
-            refreshExpanded(0)
-            // 尚无可展示式：恢复候选栏 Idle（隐藏）
-            bar.notifyCandidateEmpty()
+            // 如「1+」或除零：保留算式继续输入，但不占用一个空白候选栏。
+            hideCalculatorCandidate()
             return
         }
+        calculatorShowing = true
         // 展示 `算式=答案`（去掉可能已存在的末尾 `=`，避免重复）
         val display = expr.removeSuffix("=") + "=" + answer
         adapter.updateCandidates(arrayOf(CandidateWord("", display, "")), 1)
@@ -250,10 +259,9 @@ class HorizontalCandidateComponent :
     /** 隐藏计算器候选，恢复 fcitx 候选显示。 */
     fun hideCalculatorCandidate() {
         calculatorShowing = false
-        // 触发一次候选刷新，恢复正常 fcitx 候选
-        adapter.updateCandidates(emptyArray(), 0)
-        refreshExpanded(0)
-        // 恢复候选栏正常态
+        // 先恢复实际候选和对应标志，再退出覆盖；无需等待下一次 fcitx 事件。
+        onCandidateUpdate(lastNativeCandidates)
+        bar.onCandidateUpdate(lastNativeCandidates)
         bar.notifyCandidateEmpty()
     }
 }

@@ -38,8 +38,10 @@ import org.fcitx.fcitx5.android.data.theme.ThemeManager
 import org.fcitx.fcitx5.android.input.bar.ExpandButtonStateMachine.State.ClickToAttachWindow
 import org.fcitx.fcitx5.android.input.bar.ExpandButtonStateMachine.State.ClickToDetachWindow
 import org.fcitx.fcitx5.android.input.bar.ExpandButtonStateMachine.State.Hidden
+import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.BooleanKey.CalculatorActive
 import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.BooleanKey.CandidateEmpty
 import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.BooleanKey.PreeditEmpty
+import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.TransitionEvent.CalculatorUpdated
 import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.TransitionEvent.CandidatesUpdated
 import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.TransitionEvent.ExtendedWindowAttached
 import org.fcitx.fcitx5.android.input.bar.KawaiiBarStateMachine.TransitionEvent.PreeditUpdated
@@ -460,25 +462,18 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
         barStateMachine.push(PreeditUpdated, PreeditEmpty to empty)
     }
 
-    /** 计算器候选激活时对候选栏 UI 的加锁标志：加锁期间状态机不得切换 displayedChild。 */
-    private var candidateUiLockedByCalculator = false
-
-    /** 计算器候选显示时调用：直接切到 candidateUi（index1）并加锁，防止状态机切走。 */
+    /** 计算器候选也通过状态机显示，保证界面与状态始终一致。 */
     fun notifyCandidateNonEmpty() {
-        candidateUiLockedByCalculator = true
-        if (view.displayedChild != 1) view.displayedChild = 1
+        barStateMachine.push(CalculatorUpdated, CalculatorActive to true)
     }
 
-    /** 计算器候选隐藏时调用：解锁并恢复候选栏正常态。 */
+    /** 结束计算候选覆盖：立即恢复普通候选或工具栏，保留扩展窗口的标题栏。 */
     fun notifyCandidateEmpty() {
-        candidateUiLockedByCalculator = false
-        // 触发状态机重新求值，由 fcitx 候选/preedit 状态决定最终 UI
-        barStateMachine.push(CandidatesUpdated, CandidateEmpty to true)
+        barStateMachine.push(CalculatorUpdated, CalculatorActive to false)
     }
 
     override fun onCandidateUpdate(data: CandidateListEvent.Data) {
-        // 计算器激活期间屏蔽 fcitx 候选事件，避免打回 Idle（隐藏）状态
-        if (candidateUiLockedByCalculator) return
+        // 计算期间仍记录普通候选状态，退出时无需等待新事件即可正确恢复。
         barStateMachine.push(CandidatesUpdated, CandidateEmpty to data.candidates.isEmpty())
     }
 
