@@ -60,6 +60,12 @@ object ChineseKeyboardSymbols {
 
     /** 仅识别原样出厂副本；旧版及被拒版本均只在加载时升级，不覆盖自定义文件。 */
     fun upgradeTextTemplate(custom: KeyboardLayoutConfig, defaults: KeyboardLayoutConfig): KeyboardLayoutConfig {
+        // 仅方向仍旧、其余内容与当前出厂模板完全一致的单行版本。
+        val previousSingleRow = defaults.copy(keys = defaults.keys.mapValues { (id, key) ->
+            if (id in listOf("p", "l") && key is KeySpec.Letter)
+                key.copy(popupLetterOffset = 1, popupShiftX = 0) else key
+        })
+        if (custom == previousSingleRow) return defaults
         val previous = previousMultiRowTemplate(defaults)
         if (custom == previous) return defaults
         // 被打回版本只平移了 P/L 的整個彈窗；原樣副本恢復為字母左鄰、整體不平移。

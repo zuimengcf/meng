@@ -9,6 +9,9 @@ package org.fcitx.fcitx5.android.input.keyboard.config
  * 仅补普通 ASCII 字母，不从旧音标/注音预设恢复其他字符。
  */
 object AlphabetPopupCandidates {
+    /** JSON 缺省、代码回退及无坐标元数据的弹窗使用同一默认方向。 */
+    fun defaultLetterOffset(key: String): Int = if (key.lowercase() in listOf("p", "l")) -1 else 1
+
     fun resolve(key: String, items: List<String>, uppercase: Boolean = false): List<String> {
         if (key.length != 1 || (key[0] !in 'a'..'z' && key[0] !in 'A'..'Z')) return items
         val letter = if (uppercase) key.lowercase() else key.uppercase()

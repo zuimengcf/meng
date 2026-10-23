@@ -24,8 +24,7 @@ object PopupKeyboardLayout {
         require(outerRight - outerLeft >= keys.size)
         require(letterOffset == null || letterOffset == -1 || letterOffset == 1)
         val columns = keys.size
-        // 窄屏缩小格宽而不换行；AutoScaleTextView 同步适配文字。
-        val cellWidth = minOf(keyWidth, (outerRight - outerLeft) / columns)
+        val maxCellWidth = minOf(keyWidth, (outerRight - outerLeft) / columns)
         val hasLetter = letterOffset != null && keys.size > 1
         val pairedPrefix = !hasLetter && keys.size > 1 && PopupKeyboardCandidates.isPair(keys[0], keys[1])
         val adjacentOffset = if (hasLetter) letterOffset else if (pairedPrefix) 1 else null
@@ -34,14 +33,18 @@ object PopupKeyboardLayout {
         var preferredFocus = (columns - 1) / 2
         val leftSpace = triggerLeft - outerLeft
         val rightSpace = outerRight - triggerRight
-        while (cellWidth * preferredFocus > leftSpace) preferredFocus--
-        while (cellWidth * (columns - preferredFocus - 1) > rightSpace) preferredFocus++
+        while (maxCellWidth * preferredFocus > leftSpace) preferredFocus--
+        while (maxCellWidth * (columns - preferredFocus - 1) > rightSpace) preferredFocus++
         preferredFocus = preferredFocus.coerceIn(0, columns - 1)
 
-        // 旧算法在锚点两边留下孤立空格时会把一对符号赶到第二行。
-        // 最多五格，枚举最近的可行锚点即可同时满足邻位、配对和不换行。
+        // 排列约束与几何约束必须一起求解。不能先选最近的可排列列位，再把
+        // 整条弹窗夹到屏幕边缘：J 的成对括号会因此把默认 # 挤到字母 J 下方。
+        val centerTwice = triggerLeft + triggerRight
         var chosen: IntArray? = null
         var focus = 0
+        var cellWidth = 0
+        var baseLeft = 0
+        var bestCenterError = Int.MAX_VALUE
         for (candidate in (0 until columns).sortedWith(compareBy<Int> { abs(it - preferredFocus) }.thenBy { it })) {
             if (adjacentOffset != null && candidate + adjacentOffset !in 0 until columns) continue
             val row = IntArray(columns) { -1 }
@@ -63,18 +66,30 @@ object PopupKeyboardLayout {
                 }
                 return false
             }
-            if (place(0)) {
+            if (!place(0)) continue
+
+            // 以原键中心为锚点计算两侧可容纳格宽。先保留最大格宽，再比较
+            // 居中误差与原列位偏好；只有窄屏/极端边缘确有需要时才缩小。
+            val width = minOf(
+                maxCellWidth,
+                (centerTwice - 2 * outerLeft) / (2 * candidate + 1),
+                (2 * outerRight - centerTwice) / (2 * (columns - candidate) - 1)
+            ).coerceAtLeast(1)
+            val desiredLeft = Math.floorDiv(centerTwice - width, 2) - width * candidate
+            val left = desiredLeft.coerceIn(outerLeft, outerRight - columns * width)
+            val centerError = abs(2 * left + (2 * candidate + 1) * width - centerTwice)
+            if (width > cellWidth || (width == cellWidth && centerError < bestCenterError)) {
                 chosen = row
                 focus = candidate
-                break
+                cellWidth = width
+                baseLeft = left
+                bestCenterError = centerError
             }
         }
         val row = checkNotNull(chosen) { "五项候选必须能排入单行" }
         check(row.none { it < 0 })
-        val desiredLeft = triggerLeft + (triggerRight - triggerLeft - cellWidth) / 2 - cellWidth * focus
-        val maxLeft = outerRight - columns * cellWidth
-        val baseLeft = desiredLeft.coerceIn(outerLeft, maxLeft)
-        val left = (baseLeft + cellWidth * shiftX).coerceIn(outerLeft, maxLeft)
+        // 明确配置的整体平移仍然保留；缺省 shiftX=0 时副符号对齐原键中心。
+        val left = (baseLeft + cellWidth * shiftX).coerceIn(outerLeft, outerRight - columns * cellWidth)
         return Grid(listOf(row), focus, left - triggerLeft, cellWidth)
     }
 }

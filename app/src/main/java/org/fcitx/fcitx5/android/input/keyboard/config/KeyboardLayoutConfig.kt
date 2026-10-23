@@ -45,7 +45,7 @@ sealed class KeySpec {
         val popup: List<String>? = null,
         /** 字母候选相对副符号列的偏移：-1 左邻，+1 右邻。 */
         @SerialName("popup_letter_offset")
-        val popupLetterOffset: Int = 1,
+        val popupLetterOffset: Int = AlphabetPopupCandidates.defaultLetterOffset(char),
         /** 整体 popup 横向偏移，单位为候选格宽。 */
         @SerialName("popup_shift_x")
         val popupShiftX: Int = 0,

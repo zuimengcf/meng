@@ -24,6 +24,7 @@ import org.fcitx.fcitx5.android.input.keyboard.CustomGestureView.GestureType
 import org.fcitx.fcitx5.android.input.keyboard.CustomGestureView.OnGestureListener
 import org.fcitx.fcitx5.android.input.popup.PopupAction
 import org.fcitx.fcitx5.android.input.popup.PopupActionListener
+import org.fcitx.fcitx5.android.input.popup.PopupGeometry
 import splitties.dimensions.dp
 import splitties.views.dsl.constraintlayout.above
 import splitties.views.dsl.constraintlayout.below
@@ -261,7 +262,7 @@ abstract class BaseKeyboard(
                             view as KeyView
                             when (event.type) {
                                 GestureType.Move -> {
-                                    onPopupChangeFocus(view.id, event.x, event.y)
+                                    onPopupChangeFocus(view, event.x, event.y)
                                 }
                                 GestureType.Up -> {
                                     onPopupTrigger(view.id)
@@ -283,10 +284,11 @@ abstract class BaseKeyboard(
                             view as KeyView
                             when (event.type) {
                                 GestureType.Move -> {
-                                    onPopupChangeFocus(view.id, event.x, event.y)
+                                    onPopupChangeFocus(view, event.x, event.y)
                                 }
                                 GestureType.Up -> {
-                                    onPopupTrigger(view.id)
+                                    // UP 可能带来不同于最后一个 MOVE 的位置；先命中再提交。
+                                    onPopupChangeFocus(view, event.x, event.y) || onPopupTrigger(view.id)
                                 }
                                 else -> false
                             } || oldOnGestureListener.onGesture(view, event)
@@ -468,8 +470,15 @@ abstract class BaseKeyboard(
         popupActionListener?.onPopupAction(action)
     }
 
-    private fun onPopupChangeFocus(viewId: Int, x: Float, y: Float): Boolean {
-        val changeFocusAction = PopupAction.ChangeFocusAction(viewId, x, y)
+    private val popupTouchLocation = IntArray(2)
+
+    private fun onPopupChangeFocus(view: KeyView, x: Float, y: Float): Boolean {
+        view.getLocationInWindow(popupTouchLocation)
+        val bounds = view.bounds
+        val (triggerX, triggerY) = PopupGeometry.triggerCoordinates(
+            popupTouchLocation[0], popupTouchLocation[1], bounds.left, bounds.top, x, y
+        )
+        val changeFocusAction = PopupAction.ChangeFocusAction(view.id, triggerX, triggerY)
         popupActionListener?.onPopupAction(changeFocusAction)
         return changeFocusAction.outResult
     }

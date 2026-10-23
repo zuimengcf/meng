@@ -53,7 +53,8 @@ class TextKeyboard(
             val items = ChineseKeyboardSymbols.candidates.getValue(char.lowercase())
             return AlphabetKey(char, items.first(), popup = arrayOf(
                 KeyDef.Popup.AltPreview(char, items.first(), rawAlternative = true),
-                KeyDef.Popup.Keyboard.Explicit(items.toTypedArray(), letterOffset = 1)
+                KeyDef.Popup.Keyboard.Explicit(items.toTypedArray(),
+                    letterOffset = AlphabetPopupCandidates.defaultLetterOffset(char))
             ), literalSymbols = true)
         }
 
@@ -266,7 +267,8 @@ class TextKeyboard(
                 val appearance = findViewById<KeyView>(action.viewId)?.def as? KeyDef.Appearance.Text
                 val key = appearance?.displayText.orEmpty()
                 val sourceKeyboard = action.keyboard as? KeyDef.Popup.Keyboard.Explicit
-                val letterOffset = if (appearance is KeyDef.Appearance.AltText) sourceKeyboard?.letterOffset ?: 1 else null
+                val letterOffset = if (appearance is KeyDef.Appearance.AltText)
+                    sourceKeyboard?.letterOffset ?: AlphabetPopupCandidates.defaultLetterOffset(key) else null
                 val candidates = if (appearance is KeyDef.Appearance.AltText)
                     AlphabetPopupCandidates.resolve(key, items.orEmpty(), capsState != CapsState.None)
                 else items.orEmpty()

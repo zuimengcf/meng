@@ -21,7 +21,6 @@ import splitties.views.dsl.core.matchParent
 import splitties.views.dsl.core.verticalLayout
 import splitties.views.dsl.core.view
 import splitties.views.gravityCenter
-import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /**
@@ -150,7 +149,9 @@ class PopupKeyboardUi(
         // move to next row when gesture moves above 30% from bottom of current row
         var newRow = rowCount - (y / keyHeight - 0.2).roundToInt()
         // move to next column when gesture moves out of current column
-        var newColumn = floor(x / keyWidth).toInt()
+        var newColumn = PopupKeyboardHitTest.column(
+            x, y, keyWidth, keyHeight, focusColumn, offsetX, triggerBounds.width()
+        )
         // retain focus when gesture moves between ±2 rows/columns of range
         if (newRow < -2 || newRow > rowCount + 1 || newColumn < -2 || newColumn > columnCount + 1) {
             onDismissSelf(this)

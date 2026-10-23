@@ -3,6 +3,13 @@ package org.fcitx.fcitx5.android.input.popup
 
 /** Convert window-space key bounds to margins local to the popup container. */
 internal object PopupGeometry {
+    /** 触摸来自外层 KeyView，弹层锚点来自其内部 AppearanceView。 */
+    fun triggerCoordinates(
+        touchLeft: Int, touchTop: Int, triggerLeft: Int, triggerTop: Int,
+        x: Float, y: Float
+    ): Pair<Float, Float> =
+        (x + touchLeft - triggerLeft) to (y + touchTop - triggerTop)
+
     fun entryMargins(
         rootLeft: Int,
         rootTop: Int,
