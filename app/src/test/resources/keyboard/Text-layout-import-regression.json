@@ -1,0 +1,339 @@
+{
+  "rows": [
+    [
+      "q",
+      "w",
+      "e",
+      "r",
+      "t",
+      "y",
+      "u",
+      "i",
+      "o",
+      "p"
+    ],
+    [
+      "a",
+      "s",
+      "d",
+      "f",
+      "g",
+      "h",
+      "j",
+      "k",
+      "l"
+    ],
+    [
+      "caps",
+      "z",
+      "x",
+      "c",
+      "v",
+      "b",
+      "n",
+      "m",
+      "backspace"
+    ],
+    [
+      "symbol123",
+      "comma",
+      "lang",
+      "space",
+      "dot",
+      "return"
+    ]
+  ],
+  "keys": {
+    "q": {
+      "type": "letter",
+      "char": "q",
+      "alt": "1",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "w": {
+      "type": "letter",
+      "char": "w",
+      "alt": "2",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "e": {
+      "type": "letter",
+      "char": "e",
+      "alt": "3",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "r": {
+      "type": "letter",
+      "char": "r",
+      "alt": "4",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "t": {
+      "type": "letter",
+      "char": "t",
+      "alt": "5",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "y": {
+      "type": "letter",
+      "char": "y",
+      "alt": "6",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "u": {
+      "type": "letter",
+      "char": "u",
+      "alt": "7",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "i": {
+      "type": "letter",
+      "char": "i",
+      "alt": "8",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "o": {
+      "type": "letter",
+      "char": "o",
+      "alt": "9",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "p": {
+      "type": "letter",
+      "char": "p",
+      "alt": "0",
+      "popup": [],
+      "popup_letter_offset": -1,
+      "popup_shift_x": 0
+    },
+    "a": {
+      "type": "letter",
+      "char": "a",
+      "alt": "@",
+      "popup": [
+        "，",
+        "、"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "s": {
+      "type": "letter",
+      "char": "s",
+      "alt": "*",
+      "popup": [
+        "；"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "d": {
+      "type": "letter",
+      "char": "d",
+      "alt": "+",
+      "popup": [
+        "±"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "f": {
+      "type": "letter",
+      "char": "f",
+      "alt": "-",
+      "popup": [],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "g": {
+      "type": "letter",
+      "char": "g",
+      "alt": "=",
+      "popup": [
+        "≠",
+        "≈"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "h": {
+      "type": "letter",
+      "char": "h",
+      "alt": "/",
+      "popup": [
+        "÷"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "j": {
+      "type": "letter",
+      "char": "j",
+      "alt": "#",
+      "popup": [
+        "【",
+        "】"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "k": {
+      "type": "letter",
+      "char": "k",
+      "alt": "（",
+      "popup": [
+        "《",
+        "{"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "l": {
+      "type": "letter",
+      "char": "l",
+      "alt": "）",
+      "popup": [
+        "》",
+        "}"
+      ],
+      "popup_letter_offset": -1,
+      "popup_shift_x": 0
+    },
+    "z": {
+      "type": "letter",
+      "char": "z",
+      "alt": "'",
+      "popup": [
+        "「",
+        "」",
+        "『",
+        "』",
+        "’"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "x": {
+      "type": "letter",
+      "char": "x",
+      "alt": ":",
+      "popup": [
+        "×",
+        "%",
+        "‰"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "c": {
+      "type": "letter",
+      "char": "c",
+      "alt": "\"",
+      "popup": [
+        "”",
+        "〔",
+        "〕"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "v": {
+      "type": "letter",
+      "char": "v",
+      "alt": "?",
+      "popup": [
+        "……"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "b": {
+      "type": "letter",
+      "char": "b",
+      "alt": "!",
+      "popup": [
+        "￥"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "n": {
+      "type": "letter",
+      "char": "n",
+      "alt": "~",
+      "popup": [
+        "—",
+        "——"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "m": {
+      "type": "letter",
+      "char": "m",
+      "alt": ".",
+      "popup": [
+        "\\",
+        "&",
+        "_",
+        "·"
+      ],
+      "popup_letter_offset": 1,
+      "popup_shift_x": 0
+    },
+    "caps": {
+      "type": "separator"
+    },
+    "backspace": {
+      "type": "backspace",
+      "width": 0.15,
+      "variant": "alternative"
+    },
+    "symbol123": {
+      "type": "layout_switch",
+      "label": "?123",
+      "to": "",
+      "width": 0.15
+    },
+    "comma": {
+      "type": "comma",
+      "width": 0.1,
+      "variant": "alternative",
+      "char": ","
+    },
+    "lang": {
+      "type": "lang"
+    },
+    "space": {
+      "type": "space"
+    },
+    "dot": {
+      "type": "symbol",
+      "char": ".",
+      "width": 0.1,
+      "variant": "alternative"
+    },
+    "return": {
+      "type": "return",
+      "width": 0.15
+    }
+  }
+}

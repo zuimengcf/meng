@@ -18,11 +18,13 @@ import androidx.core.view.updateLayoutParams
 import androidx.lifecycle.lifecycleScope
 import androidx.paging.Pager
 import androidx.paging.PagingConfig
+import androidx.paging.PagingData
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardManager
@@ -43,6 +45,7 @@ import org.fcitx.fcitx5.android.input.dependency.inputMethodService
 import org.fcitx.fcitx5.android.input.dependency.theme
 import org.fcitx.fcitx5.android.input.keyboard.KeyboardWindow
 import org.fcitx.fcitx5.android.input.layout.KeyboardMode
+import org.fcitx.fcitx5.android.input.dialog.keyboardPositionDialogBuilder
 import org.fcitx.fcitx5.android.input.wm.InputWindow
 import org.fcitx.fcitx5.android.input.wm.InputWindowManager
 import org.fcitx.fcitx5.android.utils.AppUtil
@@ -97,33 +100,55 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
     private var currentQuery = ""
 
     private fun buildPager(): Pager<Int, ClipboardEntry> {
+        val groupId = currentGroupId
         val query = currentQuery.trim()
-        return Pager(PagingConfig(pageSize = 16)) {
+        return Pager(PagingConfig(pageSize = 16, enablePlaceholders = false)) {
             if (query.isNotEmpty()) {
                 // 有搜索：限定当前分组（全部/未分组/某分组）
-                when (currentGroupId) {
+                when (groupId) {
                     0 -> ClipboardManager.search(query)
                     -1 -> ClipboardManager.searchIn(-1, query) // 未分组搜索
-                    else -> ClipboardManager.searchIn(currentGroupId, query)
+                    else -> ClipboardManager.searchIn(groupId, query)
                 }
             } else {
                 // 无搜索：按分组过滤
-                when (currentGroupId) {
+                when (groupId) {
                     0 -> ClipboardManager.allEntries()
                     -1 -> ClipboardManager.entriesInGroup(0)
-                    else -> ClipboardManager.entriesInGroup(currentGroupId)
+                    else -> ClipboardManager.entriesInGroup(groupId)
                 }
             }
         }
     }
 
     private var adapterSubmitJob: Job? = null
+    private var pagerSubmissionId = 0L
+    private var suppressEmptyStateDuringPagerReset: Long? = null
+    private var awaitingNonEmptyAfterPagerReset: Long? = null
 
-    private fun submitCurrentPager() {
+    private fun submitCurrentPager(clearPreviousPage: Boolean = false) {
+        val submissionId = ++pagerSubmissionId
         adapterSubmitJob?.cancel()
+        suppressEmptyStateDuringPagerReset = null
+        awaitingNonEmptyAfterPagerReset = null
+        val pager = buildPager()
         adapterSubmitJob = service.lifecycleScope.launch {
-            buildPager().flow.collect {
-                adapter.submitData(it)
+            if (clearPreviousPage) {
+                suppressEmptyStateDuringPagerReset = submissionId
+                try {
+                    adapter.submitData(PagingData.empty<ClipboardEntry>())
+                } finally {
+                    if (suppressEmptyStateDuringPagerReset == submissionId) {
+                        suppressEmptyStateDuringPagerReset = null
+                    }
+                }
+                if (pagerSubmissionId != submissionId) return@launch
+                if (adapter.snapshot().items.isEmpty()) {
+                    awaitingNonEmptyAfterPagerReset = submissionId
+                }
+            }
+            pager.flow.collectLatest { pagingData ->
+                adapter.submitData(pagingData)
             }
         }
     }
@@ -216,9 +241,6 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                     currentGroupId = groupId
                     refreshGroupButtonHighlight()
                     submitCurrentPager()
-                    // 给 Room 一点时间完成 PagingSource invalidate 后再强制刷新
-                    kotlinx.coroutines.delay(100)
-                    adapter.refresh()
                 }
             }
         }
@@ -288,6 +310,23 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
         }
     }
 
+
+    private val adapterPagesUpdatedListener: () -> Unit = {
+        val empty = adapter.snapshot().items.isEmpty()
+        if (empty) {
+            if (suppressEmptyStateDuringPagerReset != pagerSubmissionId &&
+                awaitingNonEmptyAfterPagerReset != pagerSubmissionId
+            ) {
+                stateMachine.push(ClipboardDbUpdated, ClipboardDbEmpty to true)
+            }
+        } else {
+            if (awaitingNonEmptyAfterPagerReset == pagerSubmissionId) {
+                awaitingNonEmptyAfterPagerReset = null
+            }
+            stateMachine.push(ClipboardDbUpdated, ClipboardDbEmpty to false)
+        }
+    }
+
     /** 填充分组筛选条：全部 + 各分组。 */
     private fun populateGroupFilterBar(groups: List<org.fcitx.fcitx5.android.data.clipboard.db.ClipboardGroup>) {
         val bar = ui.groupFilterBar
@@ -317,9 +356,12 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                         if (segmentGroupId > 0 && currentGroupId == segmentGroupId && groupId != segmentGroupId) {
                             purgeSegmentGroup()
                         }
+                        val clearPreviousPage = groupId == 0 && adapter.snapshot().items.isNotEmpty()
                         currentGroupId = groupId
                         refreshGroupButtonHighlight()
-                        submitCurrentPager()
+                        submitCurrentPager(clearPreviousPage)
+                        ui.recyclerView.stopScroll()
+                        ui.recyclerView.scrollToPosition(0)
                     }
                 }
             }
@@ -366,16 +408,18 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
     ) {
         val labels = arrayOf(context.getString(R.string.group_ungrouped)) + groups.map { it.name }
         val groupIds = arrayOf(0) + groups.map { it.id }
-        androidx.appcompat.app.AlertDialog.Builder(context)
+        val dialog = keyboardPositionDialogBuilder(context)
             .setTitle(R.string.move_to_group)
             .setItems(labels) { _, which ->
                 val gid = groupIds[which]
                 service.lifecycleScope.launch {
                     ClipboardManager.setEntryGroup(entry.id, gid)
+                    submitCurrentPager()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            .create()
+        service.showDialog(dialog)
     }
 
     private var promptMenu: PopupMenu? = null
@@ -467,10 +511,7 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
         }
         // manually switch to initial ui
         ui.switchUiByState(initialState)
-        adapter.addLoadStateListener {
-            val empty = it.append.endOfPaginationReached && adapter.itemCount < 1
-            stateMachine.push(ClipboardDbUpdated, ClipboardDbEmpty to empty)
-        }
+        adapter.addOnPagesUpdatedListener(adapterPagesUpdatedListener)
         service.lifecycleScope.launch {
             val groups = ClipboardManager.getGroups()
             populateGroupFilterBar(groups)
@@ -481,8 +522,13 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
 
     override fun onDetached() {
         clipboardEnabledPref.unregisterOnChangeListener(clipboardEnabledListener)
+        adapter.removeOnPagesUpdatedListener(adapterPagesUpdatedListener)
         adapter.onDetached()
         adapterSubmitJob?.cancel()
+        adapterSubmitJob = null
+        pagerSubmissionId++
+        suppressEmptyStateDuringPagerReset = null
+        awaitingNonEmptyAfterPagerReset = null
         promptMenu?.dismiss()
         snackbarInstance?.dismiss()
         // 退出剪切板时清理临时分句分组

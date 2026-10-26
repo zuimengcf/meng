@@ -569,4 +569,27 @@
     <string name="theme_market_apply_ok">已应用主题「%1$s」</string>
     <string name="theme_market_installed">已安装</string>
 
+    <string name="message_phrase_cipher">Phrase cipher</string>
+    <string name="message_phrase_cipher_encrypt">Encrypt entire input field</string>
+    <string name="message_phrase_cipher_toggle_enabled">Auto-decrypt clipboard: On (tap to turn off)</string>
+    <string name="message_phrase_cipher_toggle_disabled">Auto-decrypt clipboard: Off (tap to turn on)</string>
+    <string name="message_phrase_cipher_enabled_notice">Auto-decryption is on. Valid copied ciphertext is decrypted in place and excluded from app history; ordinary copied items follow existing history settings.</string>
+    <string name="message_phrase_cipher_disabled_notice">Auto-decryption is off; this feature will not monitor or change the clipboard.</string>
+    <string name="message_phrase_cipher_set_key">Set key</string>
+    <string name="message_phrase_cipher_key_title">Phrase cipher key</string>
+    <string name="message_phrase_cipher_key_warning">For lightweight obfuscation only; this is not secure encryption.</string>
+    <string name="message_phrase_cipher_key_hint">Key (default: meng)</string>
+    <string name="message_phrase_cipher_key_empty">Key cannot be empty.</string>
+    <string name="message_phrase_cipher_key_saved">Key saved on this device.</string>
+    <string name="message_phrase_cipher_reset_key">Reset to default key</string>
+    <string name="message_phrase_cipher_key_reset">Key reset to default.</string>
+    <string name="message_phrase_cipher_too_long">Original text exceeds 50 Unicode code points (%1$d); text unchanged.</string>
+    <string name="message_phrase_cipher_read_failed">Unable to read the full input field; nothing was changed.</string>
+    <string name="message_phrase_cipher_empty_input">The input field is empty.</string>
+    <string name="message_phrase_cipher_failed">Could not encode this text; it was left unchanged.</string>
+    <string name="message_phrase_cipher_input_changed">The input field changed; try again.</string>
+    <string name="message_phrase_cipher_encrypted">Entire input field encrypted.</string>
+    <string name="message_phrase_cipher_clipboard_decrypted">Ciphertext decrypted. Tap the clipboard suggestion to paste it.</string>
+    <string name="message_phrase_cipher_unavailable">Phrase cipher is unavailable in password or sensitive fields.</string>
+
 </resources>

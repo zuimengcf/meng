@@ -26,6 +26,7 @@ import org.fcitx.fcitx5.android.input.layout.KeyboardMode
 import org.fcitx.fcitx5.android.input.picker.PickerWindow
 import org.fcitx.fcitx5.android.input.popup.EmojiModifier
 import org.fcitx.fcitx5.android.utils.DeviceUtil
+import org.fcitx.fcitx5.android.utils.MessagePhraseCipher
 import org.fcitx.fcitx5.android.utils.appContext
 import org.fcitx.fcitx5.android.utils.vibrator
 
@@ -39,6 +40,8 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         val pid = int("pid", 0)
         val editorInfoInspector = bool("editor_info_inspector", false)
         val needNotifications = bool("need_notifications", true)
+        val messagePhraseCipherKey = string("message_phrase_cipher_key", MessagePhraseCipher.DEFAULT_KEY)
+        val messagePhraseCipherEnabled = bool("message_phrase_cipher_enabled", false)
     }
 
     inner class Advanced : ManagedPreferenceCategory(R.string.advanced, sharedPreferences) {

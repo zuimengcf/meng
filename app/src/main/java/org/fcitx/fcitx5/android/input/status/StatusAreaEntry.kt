@@ -21,7 +21,8 @@ sealed class StatusAreaEntry(
             ReloadConfig,
             Keyboard,
             KeyboardPosition,
-            ThemeList
+            ThemeList,
+            MessagePhraseCipher
         }
     }
 

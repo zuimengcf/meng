@@ -61,6 +61,14 @@ object AppUtil {
         }
     }
 
+    /** Reuse the clipboard search input Activity as a normal, keyboard-capable key editor. */
+    fun launchClipboardCipherKeySetting(context: Context) {
+        context.startActivity<ClipboardSearchActivity> {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(ClipboardSearchActivity.EXTRA_MODE, ClipboardSearchActivity.MODE_CIPHER_KEY)
+        }
+    }
+
     fun exit() {
         exitProcess(0)
     }

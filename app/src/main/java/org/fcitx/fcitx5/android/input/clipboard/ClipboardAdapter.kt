@@ -89,7 +89,17 @@ abstract class ClipboardAdapter(
         ViewHolder(ClipboardEntryUi(parent.context, theme, entryRadius))
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val entry = getItem(position) ?: return
+        val entry = getItem(position)
+        if (entry == null) {
+            with(holder.entryUi) {
+                setEntry("", pinned = false)
+                root.setOnClickListener(null)
+                root.setOnLongClickListener(null)
+                root.isClickable = false
+                root.isLongClickable = false
+            }
+            return
+        }
         with(holder.entryUi) {
             val isImage = entry.type.startsWith("image/") && entry.imagePath != null
             setEntry(

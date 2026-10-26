@@ -10,6 +10,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import org.fcitx.fcitx5.android.BuildConfig
+import org.fcitx.fcitx5.android.R
 import androidx.annotation.Keep
 import androidx.room.Room
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +33,8 @@ import org.fcitx.fcitx5.android.input.clipboard.ClipboardSentenceSplitter
 import org.fcitx.fcitx5.android.utils.WeakHashSet
 import org.fcitx.fcitx5.android.utils.appContext
 import org.fcitx.fcitx5.android.utils.clipboardManager
+import org.fcitx.fcitx5.android.utils.MessagePhraseCipherClipboardEventDeduplicator
+import org.fcitx.fcitx5.android.utils.MessagePhraseCipherClipboardPolicy
 import org.fcitx.fcitx5.android.utils.timestamp
 import timber.log.Timber
 import java.io.File
@@ -194,13 +197,30 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     }
 
     private val enabledPref = AppPrefs.getInstance().clipboard.clipboardListening
+    private val clipboardItemTimeoutPref = AppPrefs.getInstance().clipboard.clipboardItemTimeout
+    private val messagePhraseCipherEnabledPref = AppPrefs.getInstance().internal.messagePhraseCipherEnabled
+    private val messagePhraseCipherKeyPref = AppPrefs.getInstance().internal.messagePhraseCipherKey
 
     @Keep
-    private val enabledListener = ManagedPreference.OnChangeListener<Boolean> { _, value ->
-        if (value) {
+    private val enabledListener = ManagedPreference.OnChangeListener<Boolean> { _, _ ->
+        updatePrimaryClipListenerRegistration()
+    }
+
+    @Keep
+    private val messagePhraseCipherKeyListener = ManagedPreference.OnChangeListener<String> { _, _ ->
+        clearTransientDecryptedClipboardEntry()
+    }
+
+    private fun updatePrimaryClipListenerRegistration() {
+        val historyEnabled = enabledPref.getValue()
+        val autoDecryptEnabled = messagePhraseCipherEnabledPref.getValue()
+        if (!autoDecryptEnabled) clearTransientDecryptedClipboardEntry()
+        if (MessagePhraseCipherClipboardPolicy.shouldListen(historyEnabled, autoDecryptEnabled)) {
             clipboardManager.addPrimaryClipChangedListener(this)
+            logPhraseClipboard("listener registered: history=$historyEnabled autoDecrypt=$autoDecryptEnabled")
         } else {
             clipboardManager.removePrimaryClipChangedListener(this)
+            logPhraseClipboard("listener removed: history=$historyEnabled autoDecrypt=$autoDecryptEnabled")
         }
     }
 
@@ -232,8 +252,10 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             .build()
         clbDao = clbDb.clipboardDao()
         clbGroupDao = clbDb.clipboardGroupDao()
-        enabledListener.onChange(enabledPref.key, enabledPref.getValue())
+        updatePrimaryClipListenerRegistration()
         enabledPref.registerOnChangeListener(enabledListener)
+        messagePhraseCipherEnabledPref.registerOnChangeListener(enabledListener)
+        messagePhraseCipherKeyPref.registerOnChangeListener(messagePhraseCipherKeyListener)
         limitListener.onChange(limitPref.key, limitPref.getValue())
         limitPref.registerOnChangeListener(limitListener)
         launch {
@@ -902,6 +924,54 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 应用主动写系统剪贴板（图片发送/粘贴）后抑制重新捕获的截止时刻（毫秒）。 */
     @Volatile private var suppressNextCaptureUntil = 0L
+    @Volatile private var suppressNextCaptureUri: Uri? = null
+    private const val TRANSIENT_DECRYPTED_CLIPBOARD_ID = Int.MIN_VALUE
+    @Volatile private var transientDecryptedClipboardEntry: ClipboardEntry? = null
+    private val phraseCipherClipboardEventDeduplicator = MessagePhraseCipherClipboardEventDeduplicator()
+
+    /** Current in-memory clipboard suggestion; the decrypted entry is never added to the database. */
+    fun currentClipboardSuggestionEntry(): ClipboardEntry? = activeTransientDecryptedClipboardEntry() ?: lastEntry
+
+    fun hasTransientDecryptedClipboardEntry(): Boolean = activeTransientDecryptedClipboardEntry() != null
+
+    fun consumeClipboardSuggestionText(): String? {
+        val transient = transientDecryptedClipboardEntry
+        if (transient != null) {
+            val entry = activeTransientDecryptedClipboardEntry() ?: return null
+            transientDecryptedClipboardEntry = null
+            return entry.text
+        }
+        return lastEntry?.text
+    }
+
+    private fun activeTransientDecryptedClipboardEntry(): ClipboardEntry? {
+        val entry = transientDecryptedClipboardEntry ?: return null
+        val timeout = clipboardItemTimeoutPref.getValue() * 1000L
+        if (timeout >= 0L && System.currentTimeMillis() - entry.timestamp >= timeout) {
+            clearTransientDecryptedClipboardEntry()
+            return null
+        }
+        return entry
+    }
+
+    fun clearTransientDecryptedClipboardEntry() {
+        if (transientDecryptedClipboardEntry == null) return
+        transientDecryptedClipboardEntry = null
+        val empty = ClipboardEntry(id = TRANSIENT_DECRYPTED_CLIPBOARD_ID, text = "")
+        onUpdateListeners.forEach { it.onUpdate(empty) }
+    }
+
+    private fun publishTransientDecryptedClipboardEntry(text: String, sensitive: Boolean) {
+        val entry = ClipboardEntry(
+            id = TRANSIENT_DECRYPTED_CLIPBOARD_ID,
+            text = text,
+            timestamp = System.currentTimeMillis(),
+            sensitive = sensitive,
+            hasBeenSynced = false
+        )
+        transientDecryptedClipboardEntry = entry
+        onUpdateListeners.forEach { it.onUpdate(entry) }
+    }
 
     /**
      * 把图片写入系统剪贴板（供跨应用粘贴/发送），并抑制因此触发的重新捕获，
@@ -913,18 +983,58 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         if (!file.exists()) return false
         val uri = imageContentUri(imagePath) ?: return false
         val clip = ClipData.newUri(appContext.contentResolver, label, uri)
+        suppressNextCaptureUri = uri
         suppressNextCaptureUntil = System.currentTimeMillis() + 3000
-        clipboardManager.setPrimaryClip(clip)
-        return true
+        return try {
+            clipboardManager.setPrimaryClip(clip)
+            true
+        } catch (exception: Exception) {
+            suppressNextCaptureUntil = 0L
+            suppressNextCaptureUri = null
+            Timber.w("Failed to copy clipboard image (%s)", exception.javaClass.simpleName)
+            false
+        }
     }
 
     override fun onPrimaryClipChanged() {
-        // 本次剪贴板变更是本应用主动写入图片引起的，跳过捕获（避免重复条目）
-        if (System.currentTimeMillis() < suppressNextCaptureUntil) {
-            suppressNextCaptureUntil = 0
+        val historyEnabled = enabledPref.getValue()
+        val autoDecryptEnabled = messagePhraseCipherEnabledPref.getValue()
+        if (!MessagePhraseCipherClipboardPolicy.shouldListen(historyEnabled, autoDecryptEnabled)) {
+            logPhraseClipboard("clip event ignored: history=$historyEnabled autoDecrypt=$autoDecryptEnabled")
             return
         }
-        val clip = clipboardManager.primaryClip ?: return
+        val clip = try {
+            clipboardManager.primaryClip
+        } catch (exception: Exception) {
+            logPhraseClipboard("clip event primaryClip exception=${exception.javaClass.simpleName}")
+            null
+        } ?: run {
+            logPhraseClipboard("clip event primaryClip unreadable")
+            return
+        }
+        val suppressUri = suppressNextCaptureUri
+        if (suppressUri != null) {
+            val currentUri = if (clip.itemCount == 1) clip.getItemAt(0).uri else null
+            val stillPending = System.currentTimeMillis() < suppressNextCaptureUntil
+            suppressNextCaptureUntil = 0L
+            suppressNextCaptureUri = null
+            if (stillPending && currentUri == suppressUri) {
+                logPhraseClipboard("clip event suppressed after matching app image copy")
+                return
+            }
+        }
+        logPhraseClipboard("clip event received: items=${clip.itemCount} mimes=${clip.description.mimeTypeCount}")
+        if (autoDecryptEnabled && decryptClipboardEntryIfValid(clip)) return
+        clearTransientDecryptedClipboardEntry()
+        captureClipboardClipInHistory(clip)
+    }
+
+    /** Persist an ordinary copy; auto-decrypted ciphertext exits before reaching this method. */
+    private fun captureClipboardClipInHistory(clip: ClipData) {
+        if (!MessagePhraseCipherClipboardPolicy.shouldStoreHistory(
+                enabledPref.getValue(), messagePhraseCipherEnabledPref.getValue(), validCiphertextHandled = false
+            )
+        ) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val timestamp = clip.description.timestamp
             if (timestamp == lastClipTimestamp) return
@@ -938,6 +1048,10 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         }
         launch {
             ClipboardDelivery.withLock { withSyncLock {
+                if (!MessagePhraseCipherClipboardPolicy.shouldStoreHistory(
+                        enabledPref.getValue(), messagePhraseCipherEnabledPref.getValue(), validCiphertextHandled = false
+                    )
+                ) return@withSyncLock
                 val imageEntry = captureImageEntry(clip)
                 val entry = imageEntry ?: ClipboardEntry.fromClipData(clip, transformer) ?: return@withSyncLock
                 if (!entry.type.startsWith("image/") && entry.text.isBlank()) return@withSyncLock
@@ -994,6 +1108,40 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                 }
             } }
         }
+    }
+
+    private fun logPhraseClipboard(message: String) {
+        if (BuildConfig.DEBUG) Timber.tag("PhraseCipherClip").d(message)
+    }
+
+    private fun decryptClipboardEntryIfValid(clip: ClipData): Boolean {
+        if (clip.itemCount != 1) {
+            logPhraseClipboard("decrypt skipped: unsupported itemCount=${clip.itemCount}")
+            return false
+        }
+        val copiedText = clip.getItemAt(0).text?.toString()?.takeIf { it.isNotEmpty() } ?: run {
+            logPhraseClipboard("decrypt skipped: item text unavailable")
+            return false
+        }
+        val plaintext = MessagePhraseCipherClipboardPolicy.autoDecryptClipboardText(
+            copiedText, messagePhraseCipherKeyPref.getValue(),
+            enabled = messagePhraseCipherEnabledPref.getValue()
+        ) ?: run {
+            logPhraseClipboard("decrypt skipped: not valid ciphertext")
+            return false
+        }
+        val clipTimestamp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) clip.description.timestamp else null
+        if (phraseCipherClipboardEventDeduplicator.isDuplicate(copiedText, clipTimestamp, System.currentTimeMillis())) {
+            logPhraseClipboard("duplicate valid ciphertext event ignored")
+            return true
+        }
+        val sensitive = ClipboardEntry.fromClipData(clip)?.sensitive ?: false
+        publishTransientDecryptedClipboardEntry(plaintext, sensitive)
+        android.widget.Toast.makeText(
+            appContext, R.string.message_phrase_cipher_clipboard_decrypted, android.widget.Toast.LENGTH_SHORT
+        ).show()
+        logPhraseClipboard("valid ciphertext decrypted to transient clipboard suggestion")
+        return true
     }
 
     private suspend fun removeOutdated() = ClipboardDelivery.withLock { withSyncLock { ClipboardOplog.withTransaction(clbDb) { removeOutdatedUnlocked() } } }

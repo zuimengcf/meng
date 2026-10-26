@@ -30,12 +30,15 @@ import org.fcitx.fcitx5.android.input.editorinfo.EditorInfoWindow
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.InputMethod
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.Keyboard
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.KeyboardPosition
+import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.MessagePhraseCipher
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.ReloadConfig
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.ThemeList
 import org.fcitx.fcitx5.android.input.wm.InputWindow
 import org.fcitx.fcitx5.android.input.wm.InputWindowManager
 import org.fcitx.fcitx5.android.utils.AppUtil
 import org.fcitx.fcitx5.android.utils.DeviceUtil
+import org.fcitx.fcitx5.android.utils.MessagePhraseCipherOperations
+import org.fcitx.fcitx5.android.utils.MessagePhraseCipherTooLongException
 import org.fcitx.fcitx5.android.utils.alpha
 import org.mechdancer.dependency.manager.must
 import splitties.dimensions.dp
@@ -56,6 +59,8 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
     private val windowManager: InputWindowManager by manager.must()
 
     private val editorInfoInspector by AppPrefs.getInstance().internal.editorInfoInspector
+    private var messagePhraseCipherKey by AppPrefs.getInstance().internal.messagePhraseCipherKey
+    private var messagePhraseCipherEnabled by AppPrefs.getInstance().internal.messagePhraseCipherEnabled
 
     private val staticEntries by lazy {
         arrayOf(
@@ -83,6 +88,11 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
                 context.getString(R.string.virtual_keyboard),
                 R.drawable.ic_baseline_keyboard_24,
                 Keyboard
+            ),
+            StatusAreaEntry.Android(
+                context.getString(R.string.message_phrase_cipher),
+                R.drawable.ic_baseline_code_24,
+                MessagePhraseCipher
             )
         )
     }
@@ -91,6 +101,104 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
         fcitx.launchOnReady {
             it.activateAction(action.id)
         }
+    }
+
+    private fun showMessagePhraseCipherMenu(anchor: View) {
+        val popup = PopupMenu(context, anchor).apply {
+            val toggleTitle = if (messagePhraseCipherEnabled) {
+                R.string.message_phrase_cipher_toggle_enabled
+            } else {
+                R.string.message_phrase_cipher_toggle_disabled
+            }
+            menu.add(context.getString(toggleTitle))
+                .setOnMenuItemClickListener {
+                    messagePhraseCipherEnabled = !messagePhraseCipherEnabled
+                    Toast.makeText(
+                        service,
+                        if (messagePhraseCipherEnabled) {
+                            R.string.message_phrase_cipher_enabled_notice
+                        } else {
+                            R.string.message_phrase_cipher_disabled_notice
+                        },
+                        Toast.LENGTH_LONG
+                    ).show()
+                    true
+                }
+            menu.add(context.getString(R.string.message_phrase_cipher_encrypt)).apply {
+                isEnabled = messagePhraseCipherEnabled
+                setOnMenuItemClickListener {
+                    encryptCurrentEditorText()
+                    true
+                }
+            }
+            menu.add(context.getString(R.string.message_phrase_cipher_set_key))
+                .setOnMenuItemClickListener {
+                    AppUtil.launchClipboardCipherKeySetting(context)
+                    true
+                }
+        }
+        popupMenu?.dismiss()
+        popupMenu = popup
+        popup.setOnDismissListener {
+            if (popupMenu === popup) popupMenu = null
+        }
+        popup.show()
+    }
+
+    private fun encryptCurrentEditorText() {
+        if (!service.isMessagePhraseCipherEnabled()) {
+            Toast.makeText(service, R.string.message_phrase_cipher_disabled_notice, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!service.isMessagePhraseCipherAllowed()) {
+            Toast.makeText(service, R.string.message_phrase_cipher_unavailable, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (messagePhraseCipherKey.isEmpty()) {
+            Toast.makeText(service, R.string.message_phrase_cipher_key_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val snapshot = service.readCurrentEditorTextForMessagePhraseCipher() ?: run {
+            Toast.makeText(service, R.string.message_phrase_cipher_read_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val observedCount = MessagePhraseCipherOperations.codePointCount(snapshot.text)
+        if (observedCount > MessagePhraseCipherOperations.MAX_ORIGINAL_CODE_POINTS) {
+            Toast.makeText(
+                service,
+                context.getString(R.string.message_phrase_cipher_too_long, observedCount),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        if (!snapshot.isComplete) {
+            Toast.makeText(service, R.string.message_phrase_cipher_read_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (snapshot.text.isEmpty()) {
+            Toast.makeText(service, R.string.message_phrase_cipher_empty_input, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val encrypted = try {
+            MessagePhraseCipherOperations.encrypt(snapshot.text, messagePhraseCipherKey)
+        } catch (e: MessagePhraseCipherTooLongException) {
+            Toast.makeText(
+                service,
+                context.getString(R.string.message_phrase_cipher_too_long, e.actualCodePointCount),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        } catch (_: Exception) {
+            Toast.makeText(service, R.string.message_phrase_cipher_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (!service.replaceCurrentEditorTextWithoutLogging(snapshot.text, encrypted)) {
+            Toast.makeText(service, R.string.message_phrase_cipher_input_changed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(service, R.string.message_phrase_cipher_encrypted, Toast.LENGTH_SHORT).show()
     }
 
     var popupMenu: PopupMenu? = null
@@ -160,6 +268,7 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
                         Keyboard -> AppUtil.launchMainToKeyboard(context)
                         KeyboardPosition -> service.showKeyboardPositionMenu()
                         ThemeList -> AppUtil.launchMainToThemeList(context)
+                        MessagePhraseCipher -> showMessagePhraseCipherMenu(view)
                     }
                 }
             }

@@ -49,7 +49,6 @@ class ClipboardEntryUi(override val ctx: Context, private val theme: Theme, radi
         visibility = View.GONE
         scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
         setPaddingDp(4, 4, 4, 4)
-        adjustViewBounds = true
     }
 
     val pin = imageView {
@@ -86,7 +85,7 @@ class ClipboardEntryUi(override val ctx: Context, private val theme: Theme, radi
             cornerRadius = radius
             setColor(theme.clipboardEntryColor)
         }
-        add(layout, lParams(matchParent, matchParent))
+        add(layout, lParams(matchParent, wrapContent))
     }
 
     fun setEntry(text: String, pinned: Boolean, imagePath: String? = null) {

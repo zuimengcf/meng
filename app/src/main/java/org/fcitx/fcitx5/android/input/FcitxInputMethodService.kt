@@ -27,6 +27,7 @@ import android.view.Window
 import android.view.WindowManager
 import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InlineSuggestionsRequest
 import android.view.inputmethod.InlineSuggestionsResponse
 import android.view.inputmethod.InputContentInfo
@@ -70,6 +71,7 @@ import org.fcitx.fcitx5.android.data.theme.ThemeManager
 import org.fcitx.fcitx5.android.input.cursor.CursorRange
 import org.fcitx.fcitx5.android.input.cursor.CursorTracker
 import org.fcitx.fcitx5.android.utils.InputMethodUtil
+import org.fcitx.fcitx5.android.utils.MessagePhraseCipherOperations
 import org.fcitx.fcitx5.android.utils.alpha
 import org.fcitx.fcitx5.android.utils.forceShowSelf
 import org.fcitx.fcitx5.android.utils.inputMethodManager
@@ -84,6 +86,12 @@ import splitties.resources.styledColor
 import timber.log.Timber
 import java.io.File
 import kotlin.math.max
+
+data class MessagePhraseCipherEditorSnapshot(
+    val text: String,
+    val startOffset: Int,
+    val isComplete: Boolean,
+)
 
 class FcitxInputMethodService : LifecycleInputMethodService() {
 
@@ -132,6 +140,41 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     val currentInputSelection: CursorRange
         get() = selection.latest
+
+    fun isMessagePhraseCipherAllowed(): Boolean {
+        val inputType = currentInputEditorInfo.inputType
+        val inputClass = inputType and InputType.TYPE_MASK_CLASS
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        val passwordInput = when (inputClass) {
+            InputType.TYPE_CLASS_TEXT -> variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+            InputType.TYPE_CLASS_NUMBER -> variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            else -> false
+        }
+        return !passwordInput &&
+            !capabilityFlags.has(CapabilityFlag.Password) &&
+            !capabilityFlags.has(CapabilityFlag.Sensitive) &&
+            !capabilityFlags.has(CapabilityFlag.NoSpellCheck)
+    }
+
+    fun isMessagePhraseCipherEnabled(): Boolean =
+        AppPrefs.getInstance().internal.messagePhraseCipherEnabled.getValue()
+
+    fun readCurrentEditorTextForMessagePhraseCipher(): MessagePhraseCipherEditorSnapshot? {
+        if (!isMessagePhraseCipherEnabled() || !isMessagePhraseCipherAllowed()) return null
+        val ic = currentInputConnection ?: return null
+        val request = ExtractedTextRequest().apply {
+            // 50 code points can occupy 100 UTF-16 units; ask for room to detect one extra pair.
+            hintMaxChars = (MessagePhraseCipherOperations.MAX_ORIGINAL_CODE_POINTS + 1) * 2
+            hintMaxLines = MessagePhraseCipherOperations.MAX_ORIGINAL_CODE_POINTS + 1
+        }
+        val extracted = runCatching { ic.getExtractedText(request, 0) }.getOrNull() ?: return null
+        val text = extracted.text?.toString() ?: return null
+        val complete = extracted.startOffset == 0 &&
+            extracted.partialStartOffset == -1 && extracted.partialEndOffset == -1
+        return MessagePhraseCipherEditorSnapshot(text, extracted.startOffset, complete)
+    }
 
     private val composing = CursorRange()
     private var composingText = FormattedText.Empty
@@ -499,6 +542,29 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
             else -> return
         }
         currentInputConnection.setSelection(target, target)
+    }
+
+    /** Replaces the entire current editor text without recording it in input statistics or history. */
+    fun replaceCurrentEditorTextWithoutLogging(expectedText: String, replacement: String): Boolean {
+        if (!isMessagePhraseCipherEnabled() || !isMessagePhraseCipherAllowed()) return false
+        val ic = currentInputConnection ?: return false
+        val snapshot = readCurrentEditorTextForMessagePhraseCipher() ?: return false
+        if (currentInputConnection !== ic || !snapshot.isComplete || snapshot.text != expectedText) return false
+        val start = snapshot.startOffset
+        val end = start + snapshot.text.length
+
+        var accepted = false
+        ic.withBatchEdit {
+            if (ic.setSelection(start, end)) {
+                accepted = ic.commitText(replacement, 1)
+            }
+        }
+        if (!accepted) return false
+
+        resetComposingState()
+        lastTypedCode = ""
+        selection.predict(start + replacement.length)
+        return true
     }
 
     fun commitText(text: String, cursor: Int = -1, inputCode: String = "") {

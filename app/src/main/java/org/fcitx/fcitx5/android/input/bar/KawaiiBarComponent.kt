@@ -127,6 +127,7 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
             service.lifecycleScope.launch {
                 if (it.text.isEmpty()) {
                     isClipboardFresh = false
+                    idleUi.clipboardUi.text.text = ""
                 } else {
                     idleUi.clipboardUi.text.text = if (it.sensitive && clipboardMaskSensitive) {
                         ClipboardEntry.BULLET.repeat(min(42, it.text.length))
@@ -170,6 +171,7 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
         if (timeout < 0L) return
         clipboardTimeoutJob = service.lifecycleScope.launch {
             delay(timeout)
+            ClipboardManager.clearTransientDecryptedClipboardEntry()
             isClipboardFresh = false
             clipboardTimeoutJob = null
         }
@@ -316,17 +318,18 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
             }
             clipboardUi.suggestionView.apply {
                 setOnClickListener {
-                    ClipboardManager.lastEntry?.let {
-                        service.commitText(it.text)
-                    }
+                    ClipboardManager.consumeClipboardSuggestionText()?.let { service.commitText(it) }
                     clipboardTimeoutJob?.cancel()
                     clipboardTimeoutJob = null
                     isClipboardFresh = false
+                    idleUi.clipboardUi.text.text = ""
                     evalIdleUiState()
                 }
                 setOnLongClickListener {
-                    ClipboardManager.lastEntry?.let {
-                        AppUtil.launchClipboardEdit(context, it.id, true)
+                    if (!ClipboardManager.hasTransientDecryptedClipboardEntry()) {
+                        ClipboardManager.lastEntry?.let {
+                            AppUtil.launchClipboardEdit(context, it.id, true)
+                        }
                     }
                     true
                 }
@@ -426,11 +429,13 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
     }
 
     override fun onScopeSetupFinished(scope: DynamicScope) {
-        ClipboardManager.lastEntry?.let {
+        ClipboardManager.currentClipboardSuggestionEntry()?.let {
             val now = System.currentTimeMillis()
             val clipboardTimeout = clipboardItemTimeout.getValue() * 1000L
-            if (now - it.timestamp < clipboardTimeout) {
+            if (clipboardTimeout < 0L || now - it.timestamp < clipboardTimeout) {
                 onClipboardUpdateListener.onUpdate(it)
+            } else if (ClipboardManager.hasTransientDecryptedClipboardEntry()) {
+                ClipboardManager.clearTransientDecryptedClipboardEntry()
             }
         }
         ClipboardManager.addOnUpdateListener(onClipboardUpdateListener)

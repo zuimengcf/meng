@@ -316,4 +316,26 @@
     <string name="emoji_skin_tone_type_6">🏿 深膚色 (Type-6)</string>
     <string name="hide_unsupported_emojis">隱藏不支援的表情</string>
     <string name="preferred_voice_input">首選語音輸入</string>
+    <string name="message_phrase_cipher">短語加解密</string>
+    <string name="message_phrase_cipher_encrypt">加密整個輸入框</string>
+    <string name="message_phrase_cipher_toggle_enabled">自動解密剪貼簿：開啟（點擊關閉）</string>
+    <string name="message_phrase_cipher_toggle_disabled">自動解密剪貼簿：關閉（點擊開啟）</string>
+    <string name="message_phrase_cipher_enabled_notice">已開啟：複製有效密文後自動解密並替換剪貼簿，不進入應用剪貼簿歷史；一般複製內容仍依既有歷史設定處理。</string>
+    <string name="message_phrase_cipher_disabled_notice">已關閉：短語功能不會監聽、讀取或修改剪貼簿。</string>
+    <string name="message_phrase_cipher_set_key">設定密鑰</string>
+    <string name="message_phrase_cipher_key_title">短語加解密密鑰</string>
+    <string name="message_phrase_cipher_key_warning">僅用於輕量混淆，並非安全加密。</string>
+    <string name="message_phrase_cipher_key_hint">輸入密鑰（預設：meng）</string>
+    <string name="message_phrase_cipher_key_empty">密鑰不可為空</string>
+    <string name="message_phrase_cipher_key_saved">密鑰已儲存在本機設定中</string>
+    <string name="message_phrase_cipher_reset_key">還原預設密鑰</string>
+    <string name="message_phrase_cipher_key_reset">已還原預設密鑰</string>
+    <string name="message_phrase_cipher_too_long">原文最多50個Unicode碼點，目前為%1$d個；文字未變更</string>
+    <string name="message_phrase_cipher_read_failed">無法完整讀取目前輸入框，未作變更</string>
+    <string name="message_phrase_cipher_empty_input">目前輸入框為空</string>
+    <string name="message_phrase_cipher_failed">加密失敗，原文未變更</string>
+    <string name="message_phrase_cipher_input_changed">輸入框內容已變更，請重試</string>
+    <string name="message_phrase_cipher_encrypted">已加密整個輸入框</string>
+    <string name="message_phrase_cipher_clipboard_decrypted">已識別並解密；點擊剪貼簿建議即可貼上</string>
+    <string name="message_phrase_cipher_unavailable">密碼或敏感輸入框不支援此功能</string>
 </resources>
