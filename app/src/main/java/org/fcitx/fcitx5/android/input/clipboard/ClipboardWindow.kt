@@ -90,6 +90,9 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
     /** 当前选中的分组 id（0 = 全部，-1 = 未分组，>0 = 某分组）。 */
     private var currentGroupId = 0
 
+    /** 临时分句分组 id；>0 表示当前存在一个待清理的临时分组。 */
+    private var segmentGroupId = 0
+
     /** 当前搜索关键字（空串 = 不搜索）。 */
     private var currentQuery = ""
 
@@ -184,6 +187,40 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                 }
                 if (clipboardReturnAfterPaste) windowManager.attachWindow(KeyboardWindow)
             }
+
+            override fun onSegment(entry: ClipboardEntry) {
+                if (entry.type.startsWith("image/") || entry.imagePath != null) {
+                    context.toast(R.string.segment_single)
+                    return
+                }
+                service.lifecycleScope.launch {
+                    // 先清理上一次的临时分组（仅数据库，UI 稍后统一刷新）
+                    if (segmentGroupId > 0) {
+                        val oldGid = segmentGroupId
+                        segmentGroupId = 0
+                        ClipboardManager.purgeGroup(oldGid)
+                    }
+                    val groupId = ClipboardManager.segmentToGroup(entry.id)
+                    if (groupId < 0) {
+                        context.toast(R.string.segment_single)
+                        // 如果刚清理过旧分组，需刷新分组栏
+                        val groups = ClipboardManager.getGroups()
+                        populateGroupFilterBar(groups)
+                        submitCurrentPager()
+                        return@launch
+                    }
+                    segmentGroupId = groupId
+                    // 刷新分组栏，然后切换到新分组
+                    val groups = ClipboardManager.getGroups()
+                    populateGroupFilterBar(groups)
+                    currentGroupId = groupId
+                    refreshGroupButtonHighlight()
+                    submitCurrentPager()
+                    // 给 Room 一点时间完成 PagingSource invalidate 后再强制刷新
+                    kotlinx.coroutines.delay(100)
+                    adapter.refresh()
+                }
+            }
         }
     }
 
@@ -274,9 +311,16 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
             gravity = android.view.Gravity.CENTER_VERTICAL
             setOnClickListener {
                 if (currentGroupId != groupId) {
-                    currentGroupId = groupId
-                    refreshGroupButtonHighlight()
-                    if (ClipboardManager.itemCount > 0) submitCurrentPager()
+                    service.lifecycleScope.launch {
+                        // 顺序执行：先清完临时分组（事务提交后），再切分组、再刷新，
+                        // 避免 purge 的 Room invalidate 与新 Pager 查询竞争造成临时空白
+                        if (segmentGroupId > 0 && currentGroupId == segmentGroupId && groupId != segmentGroupId) {
+                            purgeSegmentGroup()
+                        }
+                        currentGroupId = groupId
+                        refreshGroupButtonHighlight()
+                        submitCurrentPager()
+                    }
                 }
             }
             tag = groupId
@@ -295,6 +339,21 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
             btn.setTextColor(
                 if (active) theme.genericActiveForegroundColor else theme.keyTextColor
             )
+        }
+    }
+
+    /** 清理临时分句分组及其条目，并从分组栏移除按钮。 */
+    private suspend fun purgeSegmentGroup() {
+        if (segmentGroupId <= 0) return
+        val gid = segmentGroupId
+        segmentGroupId = 0
+        ClipboardManager.purgeGroup(gid)
+        val groups = ClipboardManager.getGroups()
+        populateGroupFilterBar(groups)
+        if (currentGroupId == gid) {
+            currentGroupId = 0
+            refreshGroupButtonHighlight()
+            submitCurrentPager()
         }
     }
 
@@ -426,6 +485,12 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
         adapterSubmitJob?.cancel()
         promptMenu?.dismiss()
         snackbarInstance?.dismiss()
+        // 退出剪切板时清理临时分句分组
+        if (segmentGroupId > 0) {
+            val gid = segmentGroupId
+            segmentGroupId = 0
+            service.lifecycleScope.launch { ClipboardManager.purgeGroup(gid) }
+        }
     }
 
     override val title: String by lazy {

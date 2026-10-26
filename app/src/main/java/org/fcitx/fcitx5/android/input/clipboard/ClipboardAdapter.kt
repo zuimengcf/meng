@@ -116,6 +116,9 @@ abstract class ClipboardAdapter(
                 menu.item(R.string.edit, R.drawable.ic_baseline_edit_24, iconTint) {
                     onEdit(entry.id)
                 }
+                menu.item(R.string.segment, R.drawable.ic_baseline_scissors_24, iconTint) {
+                    onSegment(entry)
+                }
                 menu.item(R.string.move_to_group, R.drawable.ic_baseline_extension_24, iconTint) {
                     onMoveToGroup(entry)
                 }
@@ -159,5 +162,7 @@ abstract class ClipboardAdapter(
     abstract fun onShare(entry: ClipboardEntry)
 
     abstract fun onDelete(id: Int)
+
+    abstract fun onSegment(entry: ClipboardEntry)
 
 }

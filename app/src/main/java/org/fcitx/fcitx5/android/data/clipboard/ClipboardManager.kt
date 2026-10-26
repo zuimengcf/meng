@@ -28,6 +28,7 @@ import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardGroup
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardGroupDao
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
+import org.fcitx.fcitx5.android.input.clipboard.ClipboardSentenceSplitter
 import org.fcitx.fcitx5.android.utils.WeakHashSet
 import org.fcitx.fcitx5.android.utils.appContext
 import org.fcitx.fcitx5.android.utils.clipboardManager
@@ -477,11 +478,60 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
         text = e.text, pinned = e.pinned, timestamp = e.timestamp, type = e.type,
         sensitive = e.sensitive, deleted = deleted, groupName = groupNameById(e.groupId),
         imagePath = e.imagePath, groupSyncId = e.groupSyncId, sortOrder = e.sortOrder)
-
     suspend fun pin(id: Int) = mutateEntry(id, ClipboardOplog.OP_PIN) { it.copy(pinned = true) }
     suspend fun unpin(id: Int) = mutateEntry(id, ClipboardOplog.OP_PIN) { it.copy(pinned = false) }
-
     suspend fun updateText(id: Int, text: String) = mutateEntry(id, ClipboardOplog.OP_UPDATE_TEXT) { it.copy(text = text) }
+
+    /**
+     * 把指定条目的文本分句后插入到临时分组「分句」中，返回分组 id。
+     * 原条目不变。如果只有一段则返回 -1 表示无需分组。
+     */
+    suspend fun segmentToGroup(id: Int, groupName: String = "分句"): Int = withSyncLock {
+        val source = clbDao.get(id) ?: return@withSyncLock -1
+        val text = source.text
+        val segments = ClipboardSentenceSplitter.split(text)
+        if (segments.size <= 1) return@withSyncLock -1
+
+        ClipboardOplog.withTransaction(clbDb) {
+            // 创建临时分组
+            val groups = clbGroupDao.getAll()
+            val order = (groups.maxOfOrNull { it.sortOrder } ?: 0) + 1
+            val now = nextMutationTime()
+            val groupSyncId = ClipboardOplog.newSyncId()
+            val groupId = clbGroupDao.insert(
+                ClipboardGroup(name = groupName, sortOrder = order,
+                    syncId = groupSyncId, updatedAt = now, deviceId = ClipboardOplog.deviceId)
+            ).toInt()
+            ClipboardOplog.append(ClipboardOplog.OP_GROUP_ADD, groupSyncId,
+                group = ClipboardOplog.GroupOp(groupName, order), ts = now)
+
+            // 逐段插入条目到该分组（第一段时间戳最大，排在列表最前）
+            val groupSyncIdStr = clbGroupDao.get(groupId)?.syncId.orEmpty()
+            val baseTime = System.currentTimeMillis()
+            for ((idx, seg) in segments.withIndex()) {
+                val ts = nextMutationTime()
+                val syncId = ClipboardOplog.newSyncId()
+                val entry = ClipboardEntry(
+                    text = seg,
+                    pinned = false,
+                    timestamp = baseTime - idx,
+                    type = source.type,
+                    sensitive = source.sensitive,
+                    groupId = groupId,
+                    groupSyncId = groupSyncIdStr,
+                    syncId = syncId,
+                    updatedAt = ts,
+                    lastModifiedBy = ClipboardOplog.deviceId,
+                    hasBeenSynced = false
+                )
+                clbDao.insert(entry)
+                ClipboardOplog.append(ClipboardOplog.OP_INSERT, syncId,
+                    entry = entryOp(entry, false), ts = ts)
+            }
+            groupId
+        }
+    }
+
 
     private suspend fun mutateEntry(id: Int, opType: String, transform: (ClipboardEntry) -> ClipboardEntry) = withSyncLock {
         var result: ClipboardEntry? = null
@@ -617,6 +667,26 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             clbGroupDao.markDeleted(id, now, ClipboardOplog.deviceId)
             clbGroupDao.setSyncInfo(id, stable, now, ClipboardOplog.deviceId)
             ClipboardOplog.append(ClipboardOplog.OP_GROUP_DELETE, stable, group = ClipboardOplog.GroupOp(group.name, group.sortOrder), ts = now)
+        }
+    }
+
+    /** 彻底删除分组及其组内所有条目（不移回未分组）。用于清理临时分组。
+     * 与 delete()/deleteAll() 同样持有 Delivery 栅栏：硬删除不得与在途的
+     * 捕获→发送交错，否则已捕获的未同步条目会被硬删后仍被发出、在对端复活。 */
+    suspend fun purgeGroup(id: Int) = ClipboardDelivery.withLock {
+        withSyncLock {
+            ClipboardOplog.withTransaction(clbDb) {
+                val group = clbGroupDao.get(id) ?: return@withTransaction
+                val now = nextMutationTime()
+                val stable = group.syncId.ifEmpty { ClipboardOplog.newSyncId() }
+                clbDao.getAllIncludingDeleted().filter { it.groupId == id }.forEach { old ->
+                    deleteEntryUnlocked(old, now)
+                }
+                clbGroupDao.markDeleted(id, now, ClipboardOplog.deviceId)
+                clbGroupDao.setSyncInfo(id, stable, now, ClipboardOplog.deviceId)
+                ClipboardOplog.append(ClipboardOplog.OP_GROUP_DELETE, stable, group = ClipboardOplog.GroupOp(group.name, group.sortOrder), ts = now)
+            }
+            updateItemCount()
         }
     }
 

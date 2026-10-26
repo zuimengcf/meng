@@ -60,6 +60,8 @@
     <string name="pin">置顶</string>
     <string name="unpin">取消置顶</string>
     <string name="delete">删除</string>
+    <string name="segment">分句</string>
+    <string name="segment_single">已是单段，无需分句</string>
     <string name="clipboard">剪贴板</string>
     <string name="keyboard_height">键盘高度</string>
     <string name="virtual_keyboard">虚拟键盘</string>

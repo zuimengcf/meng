@@ -76,6 +76,7 @@ class TitleUi(override val ctx: Context, theme: Theme) : Ui {
             add(view, lParams(matchConstraints, dp(40)) {
                 centerVertically()
                 if (showTitle) {
+                    after(titleText, dp(8))
                     endOfParent(dp(5))
                 } else {
                     centerHorizontally()

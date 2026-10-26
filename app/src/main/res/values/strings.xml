@@ -106,6 +106,8 @@
     <string name="pin">Pin</string>
     <string name="unpin">Unpin</string>
     <string name="delete">Delete</string>
+    <string name="segment">Split</string>
+    <string name="segment_single">Already a single segment</string>
     <string name="clipboard">Clipboard</string>
     <string name="keyboard_height">Keyboard height</string>
     <string name="virtual_keyboard">Virtual Keyboard</string>

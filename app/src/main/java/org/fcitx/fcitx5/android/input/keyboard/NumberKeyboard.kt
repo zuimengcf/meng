@@ -32,21 +32,21 @@ class NumberKeyboard(
 
         val builtinLayout: List<List<KeyDef>> = listOf(
             listOf(
-                NumPadKey("+", 0xffab, 23f, 0.15f, KeyDef.Appearance.Variant.Alternative),
+                NumPadKey("+", 0xffab, 30f, 0.15f, KeyDef.Appearance.Variant.Alternative),
                 NumPadKey("1", 0xffb1, 30f, 0f),
                 NumPadKey("2", 0xffb2, 30f, 0f),
                 NumPadKey("3", 0xffb3, 30f, 0f),
-                NumPadKey("/", 0xffaf, 23f, 0.15f, KeyDef.Appearance.Variant.Alternative),
+                NumPadKey("/", 0xffaf, 30f, 0.15f, KeyDef.Appearance.Variant.Alternative),
             ),
             listOf(
-                NumPadKey("-", 0xffad, 23f, 0.15f, KeyDef.Appearance.Variant.Alternative),
+                NumPadKey("-", 0xffad, 30f, 0.15f, KeyDef.Appearance.Variant.Alternative),
                 NumPadKey("4", 0xffb4, 30f, 0f),
                 NumPadKey("5", 0xffb5, 30f, 0f),
                 NumPadKey("6", 0xffb6, 30f, 0f),
                 MiniSpaceKey()
             ),
             listOf(
-                NumPadKey("*", 0xffaa, 23f, 0.15f, KeyDef.Appearance.Variant.Alternative),
+                NumPadKey("*", 0xffaa, 30f, 0.15f, KeyDef.Appearance.Variant.Alternative),
                 NumPadKey("7", 0xffb7, 30f, 0f),
                 NumPadKey("8", 0xffb8, 30f, 0f),
                 NumPadKey("9", 0xffb9, 30f, 0f),
@@ -54,11 +54,11 @@ class NumberKeyboard(
             ),
             listOf(
                 LayoutSwitchKey("ABC", TextKeyboard.Name),
-                NumPadKey(",", 0xffac, 23f, 0.1f, KeyDef.Appearance.Variant.Alternative),
+                NumPadKey(",", 0xffac, 30f, 0.1f, KeyDef.Appearance.Variant.Alternative),
                 LayoutSwitchKey("!?#", PickerWindow.Key.Symbol.name, 0.13333f, KeyDef.Appearance.Variant.AltForeground),
                 NumPadKey("0", 0xffb0, 30f, 0.23334f),
-                NumPadKey("=", 0xffbd, 23f, 0.13333f, KeyDef.Appearance.Variant.AltForeground),
-                NumPadKey(".", 0xffae, 23f, 0.1f, KeyDef.Appearance.Variant.Alternative),
+                NumPadKey("=", 0xffbd, 30f, 0.13333f, KeyDef.Appearance.Variant.AltForeground),
+                NumPadKey(".", 0xffae, 30f, 0.1f, KeyDef.Appearance.Variant.Alternative),
                 ReturnKey()
             )
         )
