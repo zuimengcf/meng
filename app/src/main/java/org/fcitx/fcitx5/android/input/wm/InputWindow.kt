@@ -70,6 +70,10 @@ sealed class InputWindow : Dependent {
 
         open val title: String = ""
 
+        /** When true, the bar extension's start edge is anchored after the title
+         *  to prevent it from overlapping the back button and title. */
+        open val anchorExtensionStart: Boolean = false
+
         open fun onCreateBarExtension(): View? {
             return null
         }

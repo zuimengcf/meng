@@ -497,5 +497,7 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
         context.getString(R.string.clipboard)
     }
 
+    override val anchorExtensionStart = true
+
     override fun onCreateBarExtension(): View = ui.extension
 }

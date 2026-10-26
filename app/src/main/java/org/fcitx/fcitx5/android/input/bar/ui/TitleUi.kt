@@ -65,7 +65,7 @@ class TitleUi(override val ctx: Context, theme: Theme) : Ui {
         titleText.text = title
     }
 
-    fun addExtension(view: View, showTitle: Boolean) {
+    fun addExtension(view: View, showTitle: Boolean, anchorStart: Boolean = false) {
         if (extension != null) {
             throw IllegalStateException("TitleBar extension is already present")
         }
@@ -76,7 +76,7 @@ class TitleUi(override val ctx: Context, theme: Theme) : Ui {
             add(view, lParams(matchConstraints, dp(40)) {
                 centerVertically()
                 if (showTitle) {
-                    after(titleText, dp(8))
+                    if (anchorStart) after(titleText, dp(8))
                     endOfParent(dp(5))
                 } else {
                     centerHorizontally()
