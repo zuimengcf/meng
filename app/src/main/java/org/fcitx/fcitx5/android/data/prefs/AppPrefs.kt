@@ -475,6 +475,14 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
                 false,
                 R.string.smart_suggest_enabled_hint
             )
+            /** 是否允许按空格确认当前联想词；独立于输入引擎自身设置。 */
+            val spaceCommitEnabled = switch(
+                R.string.smart_suggest_space_commit,
+                "smart_suggest_space_commit",
+                false,
+                R.string.smart_suggest_space_commit_hint,
+                enableUiOn = { suggestEnabled.getValue() }
+            )
         }
 
         /** 智能纠错：拼音码纠正。 */
@@ -536,6 +544,7 @@ class AppPrefs(private val sharedPreferences: SharedPreferences) {
         // 兼容既有引用（smart.statsEnabled / smart.pinyinCorrectEnabled / ...）
         val statsEnabled get() = stats.statsEnabled
         val suggestEnabled get() = suggestion.suggestEnabled
+        val suggestOnSpace get() = suggestion.spaceCommitEnabled
         val pinyinCorrectEnabled get() = correct.pinyinCorrectEnabled
         val correctNeighbor get() = correct.correctNeighbor
         val correctFuzzy get() = correct.correctFuzzy

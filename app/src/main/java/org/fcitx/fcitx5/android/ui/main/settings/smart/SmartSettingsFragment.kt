@@ -91,9 +91,11 @@ class SmartSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance().s
     }
 
     private var suggestionLimitPreference: Preference? = null
+    private var spaceCommitPreference: Preference? = null
     private val smart = AppPrefs.getInstance().smart
     private val suggestionEnabledListener = ManagedPreference.OnChangeListener<Boolean> { _, enabled ->
         suggestionLimitPreference?.isEnabled = enabled
+        spaceCommitPreference?.isEnabled = enabled
     }
     private val correctionEnabledListener = ManagedPreference.OnChangeListener<Boolean> { _, enabled ->
         listOf(
@@ -228,6 +230,8 @@ class SmartSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance().s
         correctionEnabledListener.onChange(smart.pinyinCorrectEnabled.key, smart.pinyinCorrectEnabled.getValue())
         suggestionLimitPreference = findPreference("smart_suggestion_limit_ui")
         suggestionLimitPreference?.isEnabled = smart.suggestEnabled.getValue()
+        spaceCommitPreference = findPreference(smart.suggestOnSpace.key)
+        spaceCommitPreference?.isEnabled = smart.suggestEnabled.getValue()
     }
 
     override fun onDestroyView() {
@@ -236,6 +240,7 @@ class SmartSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance().s
         smart.statsGroupExtra = null
         smart.suggestionGroupExtra = null
         suggestionLimitPreference = null
+        spaceCommitPreference = null
         super.onDestroyView()
     }
 

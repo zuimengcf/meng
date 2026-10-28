@@ -10,6 +10,8 @@
     <string name="smart_stats_enabled_hint">记录输入字数、高频词与连续性词汇关联</string>
     <string name="smart_suggest_enabled">智能联想</string>
     <string name="smart_suggest_enabled_hint">上屏后基于输入习惯预测下一个字词并显示为候选</string>
+    <string name="smart_suggest_space_commit">空格提交联想词</string>
+    <string name="smart_suggest_space_commit_hint">开启后，联想候选显示时按空格选择首个联想词；关闭时按空格仅输入空格</string>
     <string name="smart_suggestion_limit">联想候选数量</string>
     <string name="smart_suggestion_limit_summary">每次最多显示 %1$d 条（默认15条）</string>
     <string name="smart_suggestion_limit_failed">联想数量保存失败</string>

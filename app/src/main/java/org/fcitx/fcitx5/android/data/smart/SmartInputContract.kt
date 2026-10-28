@@ -6,6 +6,7 @@ import org.fcitx.fcitx5.android.data.stats.SmartInputText
 /** Stable v1 wire contract; no Android types, suitable for host-side unit tests. */
 object SmartInputContract {
     const val VERSION = 1
+    const val SUGGESTION_SOURCE_MARKER = "\u00a0"
     const val MAX_PAYLOAD_BYTES = 128 * 1024
     const val MAX_ROWS = 1000
     const val MAX_TTL_MS = 600_000L

@@ -9,8 +9,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.core.FcitxAPI
+import org.fcitx.fcitx5.android.core.KeyState
+import org.fcitx.fcitx5.android.core.FcitxKeyMapping
 import org.fcitx.fcitx5.android.daemon.launchOnReady
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
+import org.fcitx.fcitx5.android.data.smart.SmartInputContract
 import org.fcitx.fcitx5.android.input.broadcast.PreeditEmptyStateComponent
 import org.fcitx.fcitx5.android.input.calculator.CalculatorEngineHolder
 import org.fcitx.fcitx5.android.input.calculator.CalculatorSession
@@ -60,6 +63,7 @@ class CommonKeyActionListener :
     private var lastPickerType by AppPrefs.getInstance().internal.lastPickerType
 
     private val kbdPrefs = AppPrefs.getInstance().keyboard
+    private val suggestOnSpace by AppPrefs.getInstance().smart.suggestOnSpace
 
     private val spaceKeyLongPressBehavior by kbdPrefs.spaceKeyLongPressBehavior
     private val langSwitchKeyBehavior by kbdPrefs.langSwitchKeyBehavior
@@ -129,9 +133,29 @@ class CommonKeyActionListener :
                 is SymAction -> {
                     calculatorSession.handleSym(action.sym.sym)
                     updateCalculatorCandidate()
-                    // 旁路追踪不消费按键，原有上屏行为保持不变。
                     service.postFcitxJob {
-                        sendKey(action.sym, action.states)
+                        val isSmartSuggestionSpace =
+                            action.sym.sym == FcitxKeyMapping.FcitxKey_space &&
+                                !action.states.shift && !action.states.ctrl && !action.states.alt &&
+                                !action.states.meta && !action.states.has(KeyState.Super) &&
+                                !action.states.has(KeyState.Super2) &&
+                                inputMethodEntryCached.uniqueName.contains("rime", ignoreCase = true) &&
+                                inputMethodEntryCached.languageCode.startsWith("zh") &&
+                                clientPreeditCached.isEmpty() &&
+                                inputPanelCached.preedit.isEmpty() &&
+                                getCandidates(0, 1).firstOrNull()?.comment
+                                    ?.contains(SmartInputContract.SUGGESTION_SOURCE_MARKER) == true
+                        if (isSmartSuggestionSpace) {
+                            if (suggestOnSpace) {
+                                select(0)
+                            } else {
+                                // Keep Space as a separator instead of accepting the smart suggestion.
+                                reset()
+                                service.lifecycleScope.launch { service.commitText(" ") }
+                            }
+                        } else {
+                            sendKey(action.sym, action.states)
+                        }
                     }
                 }
                 is CommitAction -> service.postFcitxJob {

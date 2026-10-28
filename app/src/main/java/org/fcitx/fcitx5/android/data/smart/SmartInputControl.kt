@@ -96,7 +96,24 @@ object SmartInputControl {
 
     /** Called on the stats serial queue. The configuration is always the final published file. */
     internal fun writeNativeConfig(dir: File) {
-        atomicWrite(File(dir, "smart-input.conf"), effectiveConfig().entries.joinToString("") { "${it.key}=${it.value}\n" })
+        val config = effectiveConfig().toMutableMap()
+        val marker = SmartInputContract.SUGGESTION_SOURCE_MARKER
+        val label = config["suggestion_label"].orEmpty()
+        if (marker !in label) {
+            val maxLabelBytes = 64 - marker.toByteArray(Charsets.UTF_8).size
+            var end = 0
+            var bytes = 0
+            while (end < label.length) {
+                val charCount = Character.charCount(label.codePointAt(end))
+                val character = label.substring(end, end + charCount)
+                val characterBytes = character.toByteArray(Charsets.UTF_8).size
+                if (bytes + characterBytes > maxLabelBytes) break
+                end += charCount
+                bytes += characterBytes
+            }
+            config["suggestion_label"] = label.substring(0, end) + marker
+        }
+        atomicWrite(File(dir, "smart-input.conf"), config.entries.joinToString("") { "${it.key}=${it.value}\n" })
     }
 
     private fun rimeDir() = File(context.getExternalFilesDir(null), "data/rime")
