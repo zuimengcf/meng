@@ -167,8 +167,22 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                 service.lifecycleScope.launch { ClipboardManager.unpin(id) }
             }
 
-            override fun onEdit(id: Int) {
-                AppUtil.launchClipboardEdit(context, id)
+            override fun onEdit(entry: ClipboardEntry) {
+                val isImage = entry.type.startsWith("image/") && entry.imagePath != null
+                if (isImage) {
+                    val uri = ClipboardManager.imageContentUri(entry.imagePath!!)
+                    if (uri != null) {
+                        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, entry.type)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        service.startActivity(viewIntent)
+                    } else {
+                        context.toast(R.string.clipboard_image_not_found)
+                    }
+                } else {
+                    AppUtil.launchClipboardEdit(context, entry.id)
+                }
             }
 
             override fun onMoveToGroup(entry: ClipboardEntry) {
@@ -179,9 +193,23 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
             }
 
             override fun onShare(entry: ClipboardEntry) {
+                val isImage = entry.type.startsWith("image/") && entry.imagePath != null
                 val target = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, entry.text)
+                    if (isImage) {
+                        val uri = ClipboardManager.imageContentUri(entry.imagePath!!)
+                        if (uri != null) {
+                            type = entry.type
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        } else {
+                            // 无法构造 URI 时降级为文本分享
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, entry.text)
+                        }
+                    } else {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, entry.text)
+                    }
                 }
                 val chooser = Intent.createChooser(target, null).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -215,7 +243,10 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
 
             override fun onSegment(entry: ClipboardEntry) {
                 if (entry.type.startsWith("image/") || entry.imagePath != null) {
-                    context.toast(R.string.segment_single)
+                    if (entry.imagePath != null) {
+                        ClipboardManager.copyImageToSystemClipboard(entry.imagePath!!, entry.text)
+                        context.toast(R.string.clipboard_image_copied)
+                    }
                     return
                 }
                 service.lifecycleScope.launch {

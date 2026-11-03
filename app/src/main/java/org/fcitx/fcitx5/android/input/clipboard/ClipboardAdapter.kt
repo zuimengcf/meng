@@ -123,10 +123,16 @@ abstract class ClipboardAdapter(
                         onPin(entry.id)
                     }
                 }
-                menu.item(R.string.edit, R.drawable.ic_baseline_edit_24, iconTint) {
-                    onEdit(entry.id)
+                menu.item(
+                    if (isImage) R.string.clipboard_image_open else R.string.edit,
+                    R.drawable.ic_baseline_edit_24, iconTint
+                ) {
+                    onEdit(entry)
                 }
-                menu.item(R.string.segment, R.drawable.ic_baseline_scissors_24, iconTint) {
+                menu.item(
+                    if (isImage) R.string.clipboard_image_copy else R.string.segment,
+                    R.drawable.ic_baseline_scissors_24, iconTint
+                ) {
                     onSegment(entry)
                 }
                 menu.item(R.string.move_to_group, R.drawable.ic_baseline_extension_24, iconTint) {
@@ -165,7 +171,7 @@ abstract class ClipboardAdapter(
 
     abstract fun onUnpin(id: Int)
 
-    abstract fun onEdit(id: Int)
+    abstract fun onEdit(entry: ClipboardEntry)
 
     abstract fun onMoveToGroup(entry: ClipboardEntry)
 

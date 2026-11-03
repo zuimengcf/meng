@@ -468,6 +468,8 @@
     <string name="clipboard_sync_no_host_found">未发现可用主机，请检查主机是否已开房间且在同一 Wi-Fi</string>
     <string name="clipboard_sync_choose_host">选择发现的房间</string>
     <string name="clipboard_image_copied">图片已复制到系统剪贴板，请粘贴</string>
+    <string name="clipboard_image_not_found">图片文件不存在</string>
+    <string name="clipboard_image_open">打开</string>
     <string name="clipboard_copy_failed">复制图片失败</string>
 
     <!-- 梦 · 自定义键盘布局 -->
