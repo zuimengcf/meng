@@ -95,6 +95,14 @@ data class SchemaSource(
     val gitBranch: String = "main",
     /** GIT_SOURCE 时是否剥离 codeload zip 的顶层目录（如 rime-ice-master/） */
     val stripTopDir: Boolean = true,
+    /** 必须在 ZIP 中出现的方案标记文件；用于拒绝错误仓库/错误下载。 */
+    val expectedFiles: Set<String> = emptySet(),
+    /** 该 release ZIP 是否必须包含非空 version.txt。 */
+    val requireVersionFile: Boolean = false,
+    /** 上游文件指纹（GitHub SHA-256 digest 或资产更新时间标记），LTS 用于检测同 tag 内容变化。 */
+    val assetFingerprint: String? = null,
+    /** 最新版本/资产检查未成功；当前 version 仅供显示，不能作为更新判定依据。 */
+    val versionCheckFailed: Boolean = false,
 ) {
     /** 是否为 git 源码源 */
     val isGitSource: Boolean get() = sourceType == SourceType.GIT_SOURCE
@@ -185,9 +193,14 @@ object SchemaSources {
 
     private const val GH = "https://github.com"
     private val mirrorRoots = listOf(
-        "https://gh-proxy.com/",
         "https://ghfast.top/",
-        "https://gh.llkk.cc/",
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+        "https://gh.chjina.com/",
+        "https://gh.monlor.com/",
+        "https://gh.nxnow.top/",
+        "https://ghproxy.cfd/",
+        "https://github.ednovas.xyz/",
     )
 
     private fun buildMirrors(owner: String, repo: String, tag: String, asset: String): List<SchemaMirror> {
@@ -200,7 +213,7 @@ object SchemaSources {
     }
 
     /** 用探测到的最新 tag 构造万象拼音主包源 */
-    fun wanxiangLatest(tag: String): SchemaSource = SchemaSource(
+    fun wanxiangLatest(tag: String, checkFailed: Boolean = false): SchemaSource = SchemaSource(
         displayName = "万象拼音",
         schemaId = "wanxiang",
         owner = WANXIANG_OWNER,
@@ -210,10 +223,13 @@ object SchemaSources {
         mirrors = buildMirrors(WANXIANG_OWNER, WANXIANG_REPO, tag, WANXIANG_ASSET),
         extraNote = "独立安装；大模型语法包 lmdg 请在列表中单独下载",
         extraAsset = null,
+        expectedFiles = setOf("wanxiang.schema.yaml"),
+        requireVersionFile = true,
+        versionCheckFailed = checkFailed,
     )
 
     /** 万象大模型语法包（lmdg）作为独立项目。独立 schemaId、独立镜像与版本记录。 */
-    fun lmdgSource(): SchemaSource = SchemaSource(
+    fun lmdgSource(fingerprint: String? = null, checkFailed: Boolean = false): SchemaSource = SchemaSource(
         displayName = "万象大模型语法包 (lmdg)",
         schemaId = "wanxiang-lmdg",
         owner = LMDG_OWNER,
@@ -223,10 +239,12 @@ object SchemaSources {
         mirrors = buildMirrors(LMDG_OWNER, LMDG_REPO, LMDG_TAG, LMDG_ASSET),
         extraNote = "约 380MB 大模型语法文件，可显著提升候选质量（可选）",
         extraAsset = null,
+        assetFingerprint = fingerprint,
+        versionCheckFailed = checkFailed,
     )
 
     /** 白霜拼音（rime-frost）：整包「接管但不覆盖」方案源。 */
-    fun frostLatest(tag: String): SchemaSource = SchemaSource(
+    fun frostLatest(tag: String, checkFailed: Boolean = false): SchemaSource = SchemaSource(
         displayName = "白霜拼音 (rime-frost)",
         schemaId = "rime_frost",
         owner = FROST_OWNER,
@@ -237,6 +255,8 @@ object SchemaSources {
         extraNote = "整包方案：白霜词库 + 多输入方案 + Lua + 语法模型；采用「接管但不覆盖」，不破坏现有方案",
         extraAsset = null,
         safeTakeover = true,
+        expectedFiles = setOf("rime_frost.schema.yaml"),
+        versionCheckFailed = checkFailed,
     )
 
     /** 雾凇拼音（rime-ice）：git 源码整包源（无 release）。 */
@@ -254,6 +274,7 @@ object SchemaSources {
         sourceType = SourceType.GIT_SOURCE,
         gitBranch = ICE_BRANCH,
         stripTopDir = true,
+        expectedFiles = setOf("double_pinyin.schema.yaml"),
     )
 
     /** 薄荷配置（oh-my-rime）：git 源码整包源（无 release）。 */
@@ -271,6 +292,7 @@ object SchemaSources {
         sourceType = SourceType.GIT_SOURCE,
         gitBranch = MINT_BRANCH,
         stripTopDir = true,
+        expectedFiles = setOf("default.yaml"),
     )
 
     /** 全部内置项目（列表顺序）：万象主包 + lmdg + 白霜 + 雾凇 + 薄荷 */

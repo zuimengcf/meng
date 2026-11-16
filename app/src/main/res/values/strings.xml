@@ -379,6 +379,8 @@
     <string name="schema_installed" formatted="false">已安装 v%1$s</string>
     <string name="schema_not_installed">未安装</string>
     <string name="schema_update_available" formatted="false">可更新至 v%1$s</string>
+    <string name="schema_version_check_failed">无法检查最新版本；显示的版本可能不是最新</string>
+    <string name="schema_version_check_failed_action">查看下载源</string>
     <string name="schema_download">下载</string>
     <string name="schema_download_update">更新</string>
     <string name="schema_import">导入</string>
@@ -386,6 +388,7 @@
     <string name="schema_importing">导入中…</string>
     <string name="schema_download_title">下载方案</string>
     <string name="schema_link_hint">「%1$s」最新版本 v%2$s。点击下方链接在浏览器中下载安装包（zip），下载完成后点「导入」从本地安装。官方源较慢时可换用镜像。</string>
+    <string name="schema_link_hint_unchecked">无法检查「%1$s」当前最新版本。下面展示的是 v%2$s 的下载地址，可能不是最新版本；请谨慎使用。</string>
     <string name="schema_copy">复制全部链接</string>
     <string name="schema_copied">链接已复制</string>
     <string name="schema_picker_failed">无法打开文件选择器</string>

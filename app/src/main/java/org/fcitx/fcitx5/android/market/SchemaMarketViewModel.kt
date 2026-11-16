@@ -76,20 +76,27 @@ class SchemaMarketViewModel : ViewModel() {
     fun refreshSources() {
         viewModelScope.launch {
             val fallback = SchemaSources.allFallback()
-            // 逐个探测每个可动态探测版本的方案（万象/白霜走 release API；lmdg 固定 tag 不探测）
+            // release 方案优先使用 API/重定向的最新 tag；LTS 即使 tag 不变也检查资产指纹。
             val sources = fallback.mapNotNull { f ->
                 if (f.isGitSource) {
                     f // git 源码源：直接展示，不探测 release 版本
                 } else if (f.schemaId == "wanxiang") {
-                    val latest = SchemaMarketManager.fetchLatestRelease(f)
-                    if (latest != null) SchemaSources.wanxiangLatest(latest)
-                    else SchemaSources.wanxiangLatest(SchemaSources.WANXIANG_FALLBACK_TAG)
+                    val probe = SchemaMarketManager.fetchLatestRelease(f)
+                    val base = SchemaSources.wanxiangLatest(
+                        probe.version ?: SchemaSources.WANXIANG_FALLBACK_TAG,
+                    )
+                    SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
                 } else if (f.schemaId == "rime_frost") {
-                    val latest = SchemaMarketManager.fetchLatestRelease(f)
-                    if (latest != null) SchemaSources.frostLatest(latest)
-                    else SchemaSources.frostLatest(SchemaSources.FROST_FALLBACK_TAG)
+                    val probe = SchemaMarketManager.fetchLatestRelease(f)
+                    val base = SchemaSources.frostLatest(
+                        probe.version ?: SchemaSources.FROST_FALLBACK_TAG,
+                    )
+                    SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
+                } else if (f.schemaId == "wanxiang-lmdg") {
+                    val probe = SchemaMarketManager.fetchReleaseAssetFingerprint(f)
+                    SchemaMarketFileOps.sourceWithAssetProbe(f, probe.fingerprint, probe.checked)
                 } else {
-                    f // lmdg 等固定 release 源直接展示，不探测版本
+                    f
                 }
             }
             _sources.value = sources
@@ -111,10 +118,13 @@ class SchemaMarketViewModel : ViewModel() {
     /** 卸载一个方案 */
     fun uninstall(source: SchemaSource) {
         viewModelScope.launch {
-            SchemaMarketManager.remove(source)
-            refreshInstalled()
-            _message.value = "已卸载「${source.displayName}」"
-            triggerRimeDeploy()
+            if (SchemaMarketManager.remove(source)) {
+                refreshInstalled()
+                _message.value = "已卸载「${source.displayName}」"
+                triggerRimeDeploy()
+            } else {
+                _message.value = "卸载失败，文件和安装状态未更改"
+            }
         }
     }
 
@@ -179,9 +189,13 @@ class SchemaMarketViewModel : ViewModel() {
     /** 卸载附加组件（仅删除版本记录） */
     fun uninstallExtra(extra: SchemaExtraAsset) {
         viewModelScope.launch {
-            SchemaMarketManager.removeExtra(extra)
-            refreshInstalled()
-            _message.value = "已卸载「${extra.displayName}」"
+            if (SchemaMarketManager.removeExtra(extra)) {
+                refreshInstalled()
+                _message.value = "已卸载「${extra.displayName}」"
+                triggerRimeDeploy()
+            } else {
+                _message.value = "卸载失败，文件和安装状态未更改"
+            }
         }
     }
 

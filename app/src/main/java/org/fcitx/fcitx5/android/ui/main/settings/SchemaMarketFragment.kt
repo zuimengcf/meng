@@ -78,7 +78,11 @@ class SchemaMarketFragment : Fragment() {
     private fun showDownloadDialog(source: SchemaSource) {
         val ctx = requireContext()
         val title = ctx.getString(R.string.schema_download_title)
-        val hint = ctx.getString(R.string.schema_link_hint, source.displayName, source.version)
+        val hint = ctx.getString(
+            if (source.versionCheckFailed) R.string.schema_link_hint_unchecked else R.string.schema_link_hint,
+            source.displayName,
+            source.version,
+        )
 
         // 构建视图：提示 + 每个镜像一行（标签 · 状态 · 可点击链接）。
         val container = LinearLayout(ctx).apply {

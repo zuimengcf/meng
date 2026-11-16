@@ -76,10 +76,11 @@ class SchemaListAdapter(
             name.text = source.displayName
 
             val installed = installedVersions[source.schemaId]
-            val hasUpdate = installed != null && installed != source.version
+            val hasUpdate = installed != null && SchemaMarketManager.hasUpdate(source)
             // 显式展示已装版本与安装状态：已装显示「已安装 vX」，未装显示「未安装」，
             // 有更新时追加「可更新至 vY」，而不是让用户仅凭按钮文字猜测。
             val statusLine = when {
+                source.versionCheckFailed -> ctx.getString(R.string.schema_version_check_failed)
                 installed == null -> ctx.getString(R.string.schema_not_installed)
                 hasUpdate -> ctx.getString(
                     R.string.schema_update_available,
@@ -130,12 +131,13 @@ class SchemaListAdapter(
             // 「下载 / 更新 / 卸载」按钮
             actionBtn.isEnabled = !isImporting
             actionBtn.text = when {
+                installed != null && source.versionCheckFailed -> ctx.getString(R.string.schema_version_check_failed_action)
                 hasUpdate -> ctx.getString(R.string.schema_download_update)
                 installed != null -> ctx.getString(R.string.schema_uninstall)
                 else -> ctx.getString(R.string.schema_download)
             }
             actionBtn.setOnClickListener {
-                if (installed != null && !hasUpdate) {
+                if (installed != null && !hasUpdate && !source.versionCheckFailed) {
                     // 已安装且无更新 -> 卸载
                     onUninstall?.invoke(source)
                 } else {
