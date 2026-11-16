@@ -167,7 +167,7 @@ internal object SchemaMarketFileOps {
                     }
                     out.toByteArray()
                 }
-                if (versionBytes.toString(Charsets.UTF_8.name()).trim().isEmpty()) {
+                if (versionBytes.toString(Charsets.UTF_8).trim().isEmpty()) {
                     throw IllegalArgumentException("version.txt 为空")
                 }
             }
@@ -287,7 +287,7 @@ internal object SchemaMarketFileOps {
         if (!file.isFile || file.length() <= 0L) throw IllegalArgumentException("下载文件为空")
         val prefix = ByteArray(512)
         val count = file.inputStream().use { it.read(prefix) }.coerceAtLeast(0)
-        val head = prefix.copyOf(count).toString(Charsets.UTF_8.name())
+        val head = prefix.copyOf(count).toString(Charsets.UTF_8)
             .trimStart('\uFEFF', '\u0000', ' ', '\t', '\r', '\n')
             .take(256).lowercase()
         if (head.startsWith("<!doctype html") || head.startsWith("<html") ||
@@ -369,7 +369,7 @@ internal object SchemaMarketFileOps {
         }
     }
 
-    private fun java.util.Enumeration<java.util.zip.ZipEntry>.toListCompat(): List<java.util.zip.ZipEntry> {
+    private fun java.util.Enumeration<out java.util.zip.ZipEntry>.toListCompat(): List<java.util.zip.ZipEntry> {
         val result = mutableListOf<java.util.zip.ZipEntry>()
         while (hasMoreElements()) result += nextElement()
         return result
