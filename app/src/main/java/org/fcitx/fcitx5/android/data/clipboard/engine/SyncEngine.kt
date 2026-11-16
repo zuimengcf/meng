@@ -72,20 +72,24 @@ class SyncEngine(
         val opCount get() = created + updated + deleted
     }
 
-    fun scan(only: Collection<String>? = null): ScanResult = lock.withLock {
-        val result = ScanResult()
-        val targets = (only?.let { o -> order.filter { it in o } } ?: order).mapNotNull { collections[it] }
+    fun scan(only: Collection<String>? = null): ScanResult {
         val changed = HashMap<String, MutableSet<String>>()
-        for (c in targets) {
-            try {
-                scanCollection(c, result, changed)
-            } catch (e: Exception) {
-                logger("scan ${c.name} failed", e)
-                throw e
+        val result = lock.withLock {
+            val result = ScanResult()
+            val targets = (only?.let { o -> order.filter { it in o } } ?: order).mapNotNull { collections[it] }
+            for (c in targets) {
+                try {
+                    scanCollection(c, result, changed)
+                } catch (e: Exception) {
+                    logger("scan ${c.name} failed", e)
+                    throw e
+                }
             }
+            result
         }
+        // 通知放在锁外：监听者回调可能重入引擎（查询/扫描），持锁回调会嵌套取锁。
         notify(changed)
-        result
+        return result
     }
 
     private fun scanCollection(c: SyncCollection, r: ScanResult, changed: MutableMap<String, MutableSet<String>>) {
@@ -266,18 +270,19 @@ class SyncEngine(
      * 应用远端操作（幂等）。先整批校验：任何一条 HLC 无法解析、标识非法或超前本机过多，
      * 整批拒收、一条都不合并，版本向量不推进。
      */
-    fun applyRemote(ops: List<SyncOp>): ApplyResult = lock.withLock {
-        val decoded = ops.map { op ->
-            val h = runCatching { Hlc.decode(op.hlc) }.getOrNull() ?: throw BadOpException("bad op hlc from ${op.origin}")
-            if (op.origin.isEmpty() || op.seq <= 0 || op.collection.isEmpty() || op.key.isEmpty()) throw BadOpException("bad op id ${op.origin}/${op.seq}")
-            if (h.node != op.origin) throw BadOpException("hlc node does not match origin ${op.origin}")
-            if (op.type == OpType.UPSERT && op.units == null) throw BadOpException("upsert without units")
-            if (clock.isTooFarAhead(h)) throw ClockDriftException(op.origin, op.hlc)
-            h
-        }
+    fun applyRemote(ops: List<SyncOp>): ApplyResult {
         val result = ApplyResult()
         val changed = HashMap<String, MutableSet<String>>()
-        store.transaction {
+        lock.withLock {
+            val decoded = ops.map { op ->
+                val h = runCatching { Hlc.decode(op.hlc) }.getOrNull() ?: throw BadOpException("bad op hlc from ${op.origin}")
+                if (op.origin.isEmpty() || op.seq <= 0 || op.collection.isEmpty() || op.key.isEmpty()) throw BadOpException("bad op id ${op.origin}/${op.seq}")
+                if (h.node != op.origin) throw BadOpException("hlc node does not match origin ${op.origin}")
+                if (op.type == OpType.UPSERT && op.units == null) throw BadOpException("upsert without units")
+                if (clock.isTooFarAhead(h)) throw ClockDriftException(op.origin, op.hlc)
+                h
+            }
+            store.transaction {
             for ((i, op) in ops.withIndex()) {
                 val known = store.versionVector()[op.origin] ?: 0L
                 if (op.origin == deviceId || op.seq <= known || store.hasOp(op.origin, op.seq)) {
@@ -313,9 +318,11 @@ class SyncEngine(
                 result.applied++
             }
             store.setMeta(META_HLC, clock.current().encode())
+            }
         }
+        // 通知放在锁外：监听者回调可能重入引擎（查询/扫描），持锁回调会嵌套取锁。
         notify(changed)
-        result
+        return result
     }
 
     /** meng 扩展：业务层落地失败，把这些记录退回影子，下一次扫描重试且不会被当成本地修改。 */

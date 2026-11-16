@@ -192,7 +192,11 @@ object ClipboardSyncServer {
             require(!mcpAuthorized) { "MCP token cannot read clipboard images" }
             val sha = req.blobHash
             require(ClipboardImageBlobs.isSha256(sha)) { "无效图片哈希" }
-            val offer = offeredBlobs[req.clientId]?.takeIf { System.currentTimeMillis() - it.at <= BLOB_OFFER_TTL }
+            // 原子「读 + TTL 清理」：与 engine_pull 写入端共用同一键级原子性，过期项顺带移除，
+            // 避免「读到过期 offer 的同时写入端刚重建」的时序裂缝（修复：blob_get 不再无锁裸读）。
+            val offer = offeredBlobs.compute(req.clientId) { _, old ->
+                if (old != null && System.currentTimeMillis() - old.at <= BLOB_OFFER_TTL) old else null
+            }
             // engine/1：上一轮会话里没拉完的图片，只要仍被本机未删除的条目引用就可以补拉（已删除条目的图片永不外发）。
             val source = offer?.sources?.get(sha)
                 ?: (if (ClipboardSyncCapabilities.engineMode(req.capabilities)) ClipboardEngineSync.liveImage(sha!!)?.let { ClipboardImageBlobs.Source.FromFile(it) } else null)
@@ -344,6 +348,9 @@ object ClipboardSyncServer {
             }
             "engine_push" -> {
                 require(req.ops.size <= 1000) { "单页操作过多" }
+                // 客户端随 push 携带版本向量：用它确认之前 pull 投递的操作已被客户端吸收，
+                // 否则 engineOffers 永不清理、投递确认永远缺失（修复：push 登记确认）。
+                ClipboardDelivery.confirm(confirmCovered(req.vv))
                 val outcome = ClipboardEngineSync.applyRemote(req.ops)
                 ClipboardDelivery.recordPeerReceipt(req.clientId, ClipboardEngineSync.receiptVersions(req.ops))
                 outcome.stats?.let { ClipboardSyncNotifications.record(it) }

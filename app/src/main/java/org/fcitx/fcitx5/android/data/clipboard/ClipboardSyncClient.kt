@@ -174,7 +174,8 @@ object ClipboardSyncClient {
                     val ids = ClipboardEngineSync.entryIds(ops)
                     if (ids.isNotEmpty()) ClipboardDelivery.beginExposure(ClipboardEngineSync.exposurePacket(ids))
                     release()
-                    requestAt(url, password, ClipboardSyncWireRequest("engine_push", me, ops = ops, capabilities = caps))
+                    requestAt(url, password, ClipboardSyncWireRequest("engine_push", me, ops = ops, capabilities = caps,
+                        vv = ClipboardEngineSync.versionVector()))
                 }
                 checkCurrent()
                 ClipboardDelivery.confirm(resp.receivedEntryIds.toSet().intersect(ClipboardEngineSync.entryIds(ops)))
