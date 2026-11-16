@@ -37,7 +37,23 @@ object ClipboardSnapshotStore {
         }
     }
 
-    suspend fun fingerprint(): String = ClipboardManager.withSyncLock { fingerprintUnlocked() }
+    private val heartbeatCache = ClipboardSyncFingerprintCache()
+
+    /**
+     * 心跳摘要。数据未变时直接返回缓存，不读库、不扫 oplog、不等同步锁；
+     * 同步锁被长时间占用（大合并进行中）且已有旧值时返回旧值，下一次心跳再判断。
+     * 预览/全量覆盖仍用 [fingerprintUnlocked] 精确重算，不受缓存影响。
+     */
+    suspend fun fingerprint(): String {
+        val now = android.os.SystemClock.elapsedRealtime()
+        heartbeatCache.fresh(ClipboardSyncSignal.generation, now)?.let { return it }
+        if (ClipboardManager.isSyncBusy) heartbeatCache.any()?.let { return it }
+        return ClipboardManager.withSyncLock {
+            // Read the generation before scanning: a write racing the scan bumps it and forces a recompute.
+            val generation = ClipboardSyncSignal.generation
+            fingerprintUnlocked().also { heartbeatCache.put(generation, android.os.SystemClock.elapsedRealtime(), it) }
+        }
+    }
     internal suspend fun fingerprintUnlocked(): String {
         val md = MessageDigest.getInstance("SHA-256")
         fun add(value: String) {
@@ -110,6 +126,12 @@ object ClipboardSnapshotStore {
         // an old remote inventory/history must not resurrect their cleared plaintext.
         ClipboardPurge.purgeExpiredDeletedUnlocked()
         require(packet.protocolVersion == 2) { "同步协议不兼容，请升级双方应用" }
+        val wall = System.currentTimeMillis()
+        require(packet.entries.all { ClipboardSyncRules.isPlausibleVersionTime(it.updatedAt, wall) } &&
+            packet.groups.all { ClipboardSyncRules.isPlausibleVersionTime(it.updatedAt, wall) } &&
+            packet.history.all { ClipboardSyncRules.isPlausibleVersionTime(it.ts, wall) }) {
+            "对端设备时钟异常（版本时间超前一年以上），已拒绝本次同步，请校准该设备时间"
+        }
         require(packet.entries.all { it.syncId.isNotBlank() } && packet.groups.all { it.syncId.isNotBlank() }) { "同步数据缺少稳定标识" }
         require(packet.entries.map { it.syncId }.distinct().size == packet.entries.size && packet.groups.map { it.syncId }.distinct().size == packet.groups.size) { "同步包包含重复标识" }
         var changed = 0
@@ -207,6 +229,7 @@ object ClipboardSnapshotStore {
             }
             ClipboardOplog.appendIncomingBatch(journal)
         }
+        ClipboardSyncSignal.invalidate()
         return changed
     }
     private fun semantic(e: SyncEntry): String = json.encodeToString(e.copy(imageData = null, groupName = ""))

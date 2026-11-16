@@ -346,6 +346,8 @@ object ClipboardOplog {
             pending += candidate
         }
         ops.forEach(::plan)
+        // Every candidate was already durable: nothing changed, so neither write nor wake the sync client.
+        if (pending.isEmpty()) return
         try {
             ClipboardJournalFile.append(oplogFile, pending.asSequence().map { json.encodeToString(it) })
         } catch (t: Throwable) {

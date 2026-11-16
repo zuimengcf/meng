@@ -52,7 +52,15 @@ object ClipboardSyncServer {
 
     val isRunning get() = running.get()
     val port get() = serverPort
-    val localAddress get() = NetworkInterface.getNetworkInterfaces().toList().flatMap { it.inetAddresses.toList() }.firstOrNull { it is Inet4Address && !it.isLoopbackAddress }?.hostAddress ?: "127.0.0.1"
+    /** 优先 Wi-Fi/以太网上的私网地址，避免把蜂窝或 VPN 地址展示给同局域网设备。 */
+    val localAddress: String get() {
+        val candidates = NetworkInterface.getNetworkInterfaces().toList().filter { runCatching { it.isUp }.getOrDefault(false) }
+            .flatMap { nic -> nic.inetAddresses.toList().filterIsInstance<Inet4Address>().filter { !it.isLoopbackAddress }.map { nic.name to it } }
+        fun lanNic(name: String) = name.startsWith("wlan") || name.startsWith("eth") || name.startsWith("ap") || name.startsWith("swlan")
+        return (candidates.firstOrNull { (n, a) -> lanNic(n) && a.isSiteLocalAddress }
+            ?: candidates.firstOrNull { (_, a) -> a.isSiteLocalAddress }
+            ?: candidates.firstOrNull())?.second?.hostAddress ?: "127.0.0.1"
+    }
     val passwordHint get() = password
     private fun purge() { val now = System.currentTimeMillis(); online.entries.removeIf { now - it.value > TTL }; requestIds.entries.removeIf { now - it.value > 2 * ClipboardSyncCrypto.CLOCK_SKEW_MS + 60_000L } }
     /** 仅统计远端客户端；主机自身通过 online response 的 host id 返回给客户端。 */
@@ -146,7 +154,10 @@ object ClipboardSyncServer {
                 if (controlAuthorized && req.kind != "mcp") throw SecurityException("MCP token cannot authorize sync")
                 if (!controlAuthorized) online[req.clientId] = System.currentTimeMillis()
                 purge()
-                val result = lock.withLock { process(req, env.requestId, onClientSynced, controlAuthorized) }
+                // Heartbeats only read the (cached) fingerprint and online list: never queue them
+                // behind a long merge, or every client times out and reports a disconnect.
+                val result = if (req.kind == "heartbeat") process(req, env.requestId, onClientSynced, controlAuthorized)
+                    else lock.withLock { process(req, env.requestId, onClientSynced, controlAuthorized) }
                 val outEnv = ClipboardSyncCrypto.encrypt(credential, env.requestId, env.clientId, json.encodeToString(result), ClipboardSyncCrypto.RESPONSE_DIRECTION)
                 writeResponse(s, 200, json.encodeToString(outEnv).toByteArray())
             } catch (e: SerializationException) {
@@ -269,6 +280,6 @@ object ClipboardSyncServer {
         }
         return body
     }
-    private fun writeResponse(s: Socket, code: Int, body: ByteArray) { val reason = when (code) { 200 -> "OK"; 403 -> "Forbidden"; 413 -> "Payload Too Large"; else -> "Bad Request" }; val out = s.getOutputStream(); out.write("HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray()); out.write(body); out.flush() }
+    private fun writeResponse(s: Socket, code: Int, body: ByteArray) { val reason = when (code) { 200 -> "OK"; 403 -> "Forbidden"; 413 -> "Payload Too Large"; 426 -> "Upgrade Required"; 503 -> "Service Unavailable"; else -> "Bad Request" }; val out = s.getOutputStream(); out.write("HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray()); out.write(body); out.flush() }
     private class ByteArrayOutputStreamLimited(private val max: Int) : java.io.ByteArrayOutputStream() { override fun write(b: Int) { if (count >= max) throw IllegalArgumentException("headers too large"); super.write(b) } }
 }

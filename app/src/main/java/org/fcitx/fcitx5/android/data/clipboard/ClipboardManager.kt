@@ -78,13 +78,16 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
     private var lastObservedRemoteTime: Long = 0L
     internal fun observeRemoteTime(remote: Long): Long {
         val persisted = syncPrefs.getLong("clipboard_logical_clock", 0L)
-        val next = maxOf(System.currentTimeMillis(), remote, persisted + 1L, lastObservedRemoteTime + 1L)
+        val next = ClipboardSyncRules.nextLogicalTime(System.currentTimeMillis(), remote, persisted, lastObservedRemoteTime)
         lastObservedRemoteTime = next
         check(syncPrefs.edit().putLong("clipboard_logical_clock", next).commit()) { "无法持久保存同步版本时钟" }
         return next
     }
 
     internal fun nextMutationTime(): Long = observeRemoteTime(0L)
+
+    /** 同步锁当前是否被占用（长时间合并/快照时为 true）；只读，用于心跳快速路径。 */
+    internal val isSyncBusy: Boolean get() = syncMutex.isLocked
 
     internal fun enableSyncRetention() {
         if (!syncPrefs.getBoolean("retain_complete_sync_collection", false)) {
@@ -252,6 +255,12 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             .build()
         clbDao = clbDb.clipboardDao()
         clbGroupDao = clbDb.clipboardGroupDao()
+        // Any committed write to the synced tables makes the cached heartbeat fingerprint stale.
+        clbDb.invalidationTracker.addObserver(object : androidx.room.InvalidationTracker.Observer(
+            arrayOf(org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry.TABLE_NAME,
+                org.fcitx.fcitx5.android.data.clipboard.db.ClipboardGroup.TABLE_NAME)) {
+            override fun onInvalidated(tables: Set<String>) = ClipboardSyncSignal.invalidate()
+        })
         updatePrimaryClipListenerRegistration()
         enabledPref.registerOnChangeListener(enabledListener)
         messagePhraseCipherEnabledPref.registerOnChangeListener(enabledListener)
