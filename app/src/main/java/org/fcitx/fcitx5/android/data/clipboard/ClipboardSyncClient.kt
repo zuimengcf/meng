@@ -34,12 +34,18 @@ object ClipboardSyncClient {
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 60_000
     private const val MAX_BODY = 128 * 1024 * 1024
+    private const val ENGINE_PAGE = 200
+    private const val MAX_PAGES = 100_000
     @Volatile private var currentRoom = ""
     @Volatile private var currentPassword = ""
     @Volatile private var lastPingOk = 0L
     @Volatile private var lastUploadedLocalFingerprint = ""
     @Volatile private var lastSeenServerFingerprint = ""
     @Volatile private var peerInventory: ClipboardSyncInventory? = null
+    /** 库存的形式（旧格式 / blob 格式）必须与主机一致，形式变了就丢弃缓存的库存。 */
+    @Volatile private var peerInventoryBlobMode = false
+    /** 主机在最近一次心跳里回带的能力；旧主机为空。 */
+    @Volatile private var hostCapabilities: Set<String> = emptySet()
     @Volatile var lastSyncError: String? = null
     @Volatile var lastSyncSummary: ClipboardSyncStats? = null
     @Volatile var onlineDeviceIds: Set<String> = emptySet()
@@ -61,7 +67,7 @@ object ClipboardSyncClient {
         synchronized(this) {
             generation++
             currentRoom = normalized; currentPassword = pwd; lastPingOk = 0L
-            peerInventory = null
+            peerInventory = null; hostCapabilities = emptySet()
             lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
             job?.cancel(); val myGeneration = generation
             job = scope.launch { loop(myGeneration, normalized, pwd) }
@@ -71,7 +77,7 @@ object ClipboardSyncClient {
     fun leaveRoom() {
         synchronized(this) {
             generation++; currentRoom = ""; currentPassword = ""; lastPingOk = 0L
-            peerInventory = null
+            peerInventory = null; hostCapabilities = emptySet()
             lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
             job?.cancel(); job = null
         }
@@ -82,8 +88,10 @@ object ClipboardSyncClient {
         while (isCurrent(myGeneration, room)) {
             try {
                 val localFingerprint = ClipboardSnapshotStore.fingerprint()
-                val response = requestAt(room, pwd, ClipboardSyncWireRequest("heartbeat", ClipboardOplog.deviceId, localFingerprint))
+                val response = requestAt(room, pwd, ClipboardSyncWireRequest("heartbeat", ClipboardOplog.deviceId, localFingerprint,
+                    capabilities = ClipboardSyncCapabilities.LOCAL))
                 if (!isCurrent(myGeneration, room)) return
+                hostCapabilities = ClipboardSyncCapabilities.negotiated(response.capabilities)
                 lastPingOk = System.currentTimeMillis(); backoff = 1_000L
                 wasConnected = true
                 onlineDeviceIds = response.onlineClientIds.toSet()
@@ -114,25 +122,146 @@ object ClipboardSyncClient {
         return runCatching { runBlocking { requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest("heartbeat", ClipboardOplog.deviceId, "")) }; true }.getOrDefault(false)
     }
 
-    suspend fun syncOnce(baseUrl: String = currentRoom, password: String = currentPassword, onProgress: ((String, Int, Int, Int) -> Unit)? = null): Int = requestLock.withLock {
+    /**
+     * 一次内容同步。主机心跳确认了 engine/1（且本机也是当前房间）就走 localsync 引擎的增量协议，
+     * 否则走原来的快照协议；两条路径写的是同一个 Room 库，可以随时切换。
+     */
+    suspend fun syncOnce(baseUrl: String = currentRoom, password: String = currentPassword, onProgress: ((String, Int, Int, Int) -> Unit)? = null): Int {
+        val sameRoom = normalizeBaseUrl(baseUrl) == currentRoom && password == currentPassword
+        return if (sameRoom && ClipboardSyncCapabilities.engineMode(hostCapabilities)) requestLock.withLock { engineSyncOnce(baseUrl, password, onProgress) }
+        else legacySyncOnce(baseUrl, password, onProgress)
+    }
+
+    private suspend fun engineSyncOnce(baseUrl: String, password: String, onProgress: ((String, Int, Int, Int) -> Unit)?): Int {
+        require(password.isNotEmpty()) { "房间密码不能为空" }
+        val url = normalizeBaseUrl(baseUrl)
+        val startGeneration = generation
+        val caps = ClipboardSyncCapabilities.LOCAL
+        val me = ClipboardOplog.deviceId
+        fun checkCurrent() { if (startGeneration != generation) throw CancellationException("房间已切换或退出") }
+        try {
+            onProgress?.invoke("扫描本地变更", 0, 0, 0)
+            ClipboardEngineSync.scan()
+            val hello = requestAt(url, password, ClipboardSyncWireRequest("engine_hello", me,
+                vv = ClipboardEngineSync.versionVector(), acks = ClipboardEngineSync.ackGossip(), capabilities = caps))
+            checkCurrent()
+            require(hello.deviceId.isNotBlank() && hello.deviceId != me) { "主机设备标识无效" }
+            ClipboardEngineSync.recordPeer(hello.deviceId, hello.vv, hello.acks)
+            onlineDeviceIds = hello.onlineClientIds.toSet()
+
+            // ---- pull：拿本机缺的操作。时钟漂移/格式错误整批拒收，版本向量不推进 ----
+            var applied = 0; var pulled = 0; var stats: ClipboardSyncStats? = null; var guard = 0
+            while (true) {
+                val page = requestAt(url, password, ClipboardSyncWireRequest("engine_pull", me,
+                    vv = ClipboardEngineSync.versionVector(), limit = ENGINE_PAGE, capabilities = caps))
+                checkCurrent()
+                val out = ClipboardEngineSync.applyRemote(page.ops)
+                pulled += page.ops.size; applied += out.applied
+                out.stats?.let { s -> stats = stats?.let { combine(it, s) } ?: s }
+                ClipboardDelivery.recordPeerReceipt(hello.deviceId, ClipboardEngineSync.receiptVersions(page.ops))
+                if (out.missingBlobs.isNotEmpty()) fetchEngineBlobs(url, password, onProgress)?.let { s -> stats = stats?.let { combine(it, s) } ?: s }
+                onProgress?.invoke("接收变更 $pulled 条", 0, pulled, applied)
+                if (!page.hasMore) break
+                if (page.ops.isEmpty() || ++guard > MAX_PAGES) error("拉取变更没有进展，本次未完成")
+            }
+
+            // ---- push：只按主机真实回应的版本向量推进，绝不吸收对端向量 ----
+            var remoteVv = hello.vv; var pushed = 0; var lastStatus = hello.statusHash; guard = 0
+            while (true) {
+                val (ops, hasMore) = ClipboardEngineSync.page(remoteVv, ENGINE_PAGE)
+                if (ops.isEmpty()) break
+                val resp = ClipboardDelivery.withSendFence { release ->
+                    val ids = ClipboardEngineSync.entryIds(ops)
+                    if (ids.isNotEmpty()) ClipboardDelivery.beginExposure(ClipboardEngineSync.exposurePacket(ids))
+                    release()
+                    requestAt(url, password, ClipboardSyncWireRequest("engine_push", me, ops = ops, capabilities = caps))
+                }
+                checkCurrent()
+                ClipboardDelivery.confirm(resp.receivedEntryIds.toSet().intersect(ClipboardEngineSync.entryIds(ops)))
+                ClipboardDelivery.recordPeerReceipt(hello.deviceId, ClipboardEngineSync.receiptVersions(ops).filterKeys { it in resp.receivedEntryIds })
+                ClipboardEngineSync.recordPeer(hello.deviceId, resp.vv)
+                lastStatus = resp.statusHash
+                pushed += ops.size
+                resp.missingBlobs.forEachIndexed { i, sha ->
+                    val file = ClipboardEngineSync.blobFile(sha) ?: return@forEachIndexed
+                    onProgress?.invoke("补传图片 ${i + 1}/${resp.missingBlobs.size}", pushed, pulled, applied)
+                    val data = ClipboardImageBlobs.readBase64(ClipboardImageBlobs.Source.FromFile(file)) ?: return@forEachIndexed
+                    lastStatus = requestAt(url, password, ClipboardSyncWireRequest("blob_put", me, blobHash = sha, blobData = data, capabilities = caps)).statusHash
+                }
+                onProgress?.invoke("发送变更 $pushed 条", pushed, pulled, applied)
+                if (!hasMore) break
+                if (resp.vv == remoteVv || ++guard > MAX_PAGES) error("推送变更没有进展，本次未完成")
+                remoteVv = resp.vv
+            }
+            ClipboardEngineSync.collectGarbage()
+
+            stats?.let { lastSyncSummary = it; ClipboardSyncNotifications.record(it) }
+            lastPingOk = System.currentTimeMillis()
+            lastUploadedLocalFingerprint = ClipboardSnapshotStore.fingerprint()
+            lastSeenServerFingerprint = lastStatus
+            val waiting = ClipboardEngineSync.waitingBlobs()
+            if (waiting.isNotEmpty()) error("文字及分组已同步，但 ${waiting.size} 张图片尚未拿到原图；源设备在线后会自动补齐")
+            val missing = ClipboardSnapshotStore.missingImageIds()
+            if (missing.isNotEmpty()) error("文字及分组已同步，但 ${missing.size} 张图片源缺失；请从有原图的设备补传")
+            lastSyncError = null
+            onProgress?.invoke("完成（接收 $pulled 条，发送 $pushed 条，落地 $applied 条）", pushed, pulled, applied)
+            return applied
+        } catch (e: CancellationException) { throw e
+        } catch (e: Exception) {
+            lastSyncError = e.message ?: "同步失败"
+            throw e
+        }
+    }
+
+    /** 拉取引擎影子记录在等的图片（逐张、校验哈希），然后扫描一次让它们落地。 */
+    private suspend fun fetchEngineBlobs(url: String, password: String, onProgress: ((String, Int, Int, Int) -> Unit)?): ClipboardSyncStats? {
+        val waiting = ClipboardEngineSync.waitingBlobs()
+        if (waiting.isEmpty()) return null
+        var got = 0
+        waiting.entries.forEachIndexed { i, (sha, mime) ->
+            onProgress?.invoke("拉取图片 ${i + 1}/${waiting.size}", 0, i, 0)
+            try {
+                val r = requestAt(url, password, ClipboardSyncWireRequest("blob_get", ClipboardOplog.deviceId,
+                    blobHash = sha, capabilities = ClipboardSyncCapabilities.LOCAL))
+                ClipboardEngineSync.storeFetchedBlob(sha, java.util.Base64.getDecoder().decode(r.blobData ?: error("主机未返回图片")), mime)
+                got++
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { Timber.w("clipboard image fetch failed (%s)", e.javaClass.simpleName) }
+        }
+        return if (got > 0) ClipboardEngineSync.scan().stats else null
+    }
+
+    private fun combine(a: ClipboardSyncStats, b: ClipboardSyncStats) = ClipboardSyncStats(
+        a.added + b.added, a.mergedExisting + b.mergedExisting, a.updated + b.updated, a.deleted + b.deleted, b.totalAfter,
+        a.addedDetails + b.addedDetails, a.updatedDetails + b.updatedDetails, a.deletedDetails + b.deletedDetails)
+
+    private suspend fun legacySyncOnce(baseUrl: String, password: String, onProgress: ((String, Int, Int, Int) -> Unit)?): Int = requestLock.withLock {
         ClipboardDelivery.withSendFence { releaseFence ->
         require(password.isNotEmpty()) { "房间密码不能为空" }
         val startGeneration = generation
         try {
         onProgress?.invoke("读取本地数据", 0, 0, 0)
-        val captured = ClipboardSnapshotStore.capture()
+        val sameRoom = normalizeBaseUrl(baseUrl) == currentRoom && password == currentPassword
+        // blob/1 只在本房间、且主机心跳确认支持时启用；否则完全走旧路径。
+        val blobMode = sameRoom && ClipboardSyncCapabilities.BLOB_V1 in hostCapabilities
+        val captured = ClipboardSnapshotStore.capture(blobMode)
         val packet = captured.packet
         val uploadFingerprint = captured.fingerprint
         val inventory = ClipboardSyncDelta.inventory(packet)
-        val sameRoom = normalizeBaseUrl(baseUrl) == currentRoom && password == currentPassword
-        val outgoing = ClipboardSyncDelta.difference(packet, if (sameRoom) peerInventory else null, inventory)
+        val knownPeer = if (sameRoom && peerInventoryBlobMode == blobMode) peerInventory else null
+        val delta = ClipboardSyncDelta.difference(packet, knownPeer, inventory)
+        // 上传方向：只把这次要发的变更还原出图片字节（主机拉不到客户端），其余图片一律不编码。
+        val outgoing = if (blobMode) ClipboardSnapshotStore.hydrate(delta, captured.blobs) else delta
         onProgress?.invoke("交换变更（条目 ${outgoing.entries.size}，分组 ${outgoing.groups.size}，历史 ${outgoing.history.size}）", outgoing.entries.size, 0, 0)
-        val body = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest("sync", ClipboardOplog.deviceId, uploadFingerprint, json.encodeToString(outgoing), inventory), releaseFence)
+        val body = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest("sync", ClipboardOplog.deviceId, uploadFingerprint, json.encodeToString(outgoing), inventory,
+            capabilities = if (blobMode) ClipboardSyncCapabilities.LOCAL else emptyList()), releaseFence)
         if (startGeneration != generation) throw CancellationException("房间已切换或退出")
         if (!body.ok || body.packetJson == null) throw IllegalStateException(body.error ?: "同步响应无效")
         val incoming = json.decodeFromString<ClipboardSyncPacket>(body.packetJson)
         require(incoming.protocolVersion == ClipboardSyncCrypto.PROTOCOL_VERSION && incoming.deviceId.isNotBlank()) { "同步响应协议或设备标识无效" }
         require(incoming.deviceId != ClipboardOplog.deviceId) { "不能把本机当作其他同步设备" }
+        val responseBlobMode = ClipboardSyncCapabilities.blobMode(body.capabilities)
+        val fetched = if (responseBlobMode) fetchMissingBlobs(baseUrl, password, incoming, onProgress) else emptyList()
         ClipboardDelivery.confirm(body.receivedEntryIds.toSet().intersect(ClipboardDelivery.ids(outgoing)))
         val outgoingVersions = outgoing.entries.associate { it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId) }
         ClipboardDelivery.recordPeerReceipt(incoming.deviceId, outgoingVersions.filterKeys { it in body.receivedEntryIds })
@@ -151,7 +280,8 @@ object ClipboardSyncClient {
             ?: rawStats.mergedExisting)
         lastSyncSummary = stats
         ClipboardSyncNotifications.record(stats)
-        if (sameRoom) peerInventory = body.inventory
+        if (fetched.isNotEmpty()) ClipboardSnapshotStore.releaseUnreferencedBlobs(fetched)
+        if (sameRoom) { peerInventory = body.inventory; peerInventoryBlobMode = responseBlobMode }
         val missing = ClipboardSnapshotStore.missingImageIds()
         // The received merge is durable; an unavailable original is not fixed by resending identical bytes.
         // Track transport progress but retain an explicit incomplete-content error until a source changes.
@@ -253,6 +383,28 @@ object ClipboardSyncClient {
             lastSeenServerFingerprint = response.statusHash
             stats
         }
+    }
+
+    /** 逐张拉取快照里引用、本机没有的图片；每张都校验哈希后才落盘。失败的留给合并按「缺图」处理。 */
+    private suspend fun fetchMissingBlobs(baseUrl: String, password: String, incoming: ClipboardSyncPacket,
+        onProgress: ((String, Int, Int, Int) -> Unit)?): List<java.io.File> {
+        val dir = ClipboardSnapshotStore.imagesDir() ?: return emptyList()
+        val mimes = HashMap<String, String>()
+        incoming.entries.forEach { e -> e.imageSha256?.let { mimes.putIfAbsent(it, e.type) } }
+        incoming.history.forEach { h -> h.entry?.let { e -> e.imageSha256?.let { mimes.putIfAbsent(it, e.type) } } }
+        val missing = ClipboardImageBlobs.referencedHashes(incoming).filter { ClipboardImageBlobs.find(dir, it) == null }
+        val stored = ArrayList<java.io.File>()
+        missing.forEachIndexed { i, sha ->
+            onProgress?.invoke("拉取图片 ${i + 1}/${missing.size}", 0, i, 0)
+            try {
+                val r = requestAt(normalizeBaseUrl(baseUrl), password, ClipboardSyncWireRequest("blob_get", ClipboardOplog.deviceId,
+                    blobHash = sha, capabilities = ClipboardSyncCapabilities.LOCAL))
+                val bytes = java.util.Base64.getDecoder().decode(r.blobData ?: error("主机未返回图片"))
+                stored += ClipboardImageBlobs.store(dir, sha, bytes, mimes[sha] ?: "image/png")
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { Timber.w("clipboard image fetch failed (%s)", e.javaClass.simpleName) }
+        }
+        return stored
     }
 
     private suspend fun requestAt(baseUrl: String, password: String, req: ClipboardSyncWireRequest, afterExposure: (() -> Unit)? = null): ClipboardSyncWireResponse = withContext(Dispatchers.IO) {

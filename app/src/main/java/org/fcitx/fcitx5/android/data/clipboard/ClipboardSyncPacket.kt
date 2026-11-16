@@ -5,6 +5,8 @@
 package org.fcitx.fcitx5.android.data.clipboard
 
 import android.util.Base64
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import org.fcitx.fcitx5.android.utils.appContext
 import java.io.File
@@ -41,6 +43,7 @@ data class SyncRevision(
     val group: ClipboardOplog.GroupOp? = null,
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class SyncEntry(
     val syncId: String,
@@ -58,6 +61,9 @@ data class SyncEntry(
     val imageData: String? = null,
     val groupSyncId: String = "",
     val sortOrder: Long = 0,
+    /** 图片内容的 SHA-256（能力 blob/1）。为 null 时从不编码：旧版设备看到的 JSON 与库存哈希逐字节不变。 */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val imageSha256: String? = null,
 )
 
 @Serializable

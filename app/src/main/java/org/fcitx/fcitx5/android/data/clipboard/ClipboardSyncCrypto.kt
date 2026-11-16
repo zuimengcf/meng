@@ -37,6 +37,20 @@ data class ClipboardSyncWireRequest(
     val receivedEntryIds: List<String> = emptyList(),
     val receivedEntryVersions: Map<String, String> = emptyMap(),
     val expectedFingerprint: String? = null,
+    /** 本机支持的能力（见 [ClipboardSyncCapabilities]）；为空时不编码，与旧版请求逐字节相同。 */
+    val capabilities: List<String> = emptyList(),
+    /** kind = blob_get / blob_put 时的图片 SHA-256。 */
+    val blobHash: String? = null,
+    /** engine/1：本机版本向量（engine_hello / engine_pull）。 */
+    val vv: Map<String, Long> = emptyMap(),
+    /** engine/1：本机已知的各设备确认表（墓碑回收用）。 */
+    val acks: Map<String, Map<String, Long>> = emptyMap(),
+    /** engine/1：推送给主机的操作（engine_push）。 */
+    val ops: List<ClipboardEngineWireOp> = emptyList(),
+    /** engine/1：每页最多拉多少条操作。 */
+    val limit: Int = 0,
+    /** engine/1：kind = blob_put 的图片字节（base64）。 */
+    val blobData: String? = null,
 )
 
 @Serializable
@@ -70,6 +84,19 @@ data class ClipboardSyncWireResponse(
     val deviceId: String = "",
     val summary: ClipboardSyncSnapshotSummary? = null,
     val receivedEntryVersions: Map<String, String> = emptyMap(),
+    /** 主机能力；只在客户端声明过能力时回带。 */
+    val capabilities: List<String> = emptyList(),
+    /** kind = blob_get 的图片字节（base64），单张传输。 */
+    val blobData: String? = null,
+    /** engine/1：主机版本向量。 */
+    val vv: Map<String, Long> = emptyMap(),
+    /** engine/1：主机已知的确认表。 */
+    val acks: Map<String, Map<String, Long>> = emptyMap(),
+    /** engine/1：engine_pull 返回的一页操作。 */
+    val ops: List<ClipboardEngineWireOp> = emptyList(),
+    val hasMore: Boolean = false,
+    /** engine/1：主机合并后仍缺的图片哈希，客户端用 blob_put 补传。 */
+    val missingBlobs: List<String> = emptyList(),
 )
 
 object ClipboardSyncCrypto {

@@ -45,6 +45,13 @@ object ClipboardSyncServer {
     private val requestIds = ConcurrentHashMap<String, Long>()
     private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
     private val offeredDeliveries = ConcurrentHashMap<String, OfferedDelivery>()
+    /** blob/1：每个客户端只能拉取主机最近一次发给它的快照里出现过的图片。 */
+    private data class OfferedBlobs(val sources: Map<String, ClipboardImageBlobs.Source>, val at: Long)
+    private val offeredBlobs = ConcurrentHashMap<String, OfferedBlobs>()
+    private const val BLOB_OFFER_TTL = 10 * 60_000L
+    /** engine/1：已发给某客户端、等它在下一次请求的版本向量里确认的操作 (origin, seq, 条目 id)。 */
+    private data class EngineOffer(val origin: String, val seq: Long, val key: String)
+    private val engineOffers = ConcurrentHashMap<String, MutableList<EngineOffer>>()
     private val lock = Mutex()
     private val clients = Semaphore(8)
     private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -99,7 +106,7 @@ object ClipboardSyncServer {
         running.set(false); acceptJob?.cancel(); acceptJob = null
         runCatching { socket?.close() }; socket = null; serverPort = 0; password = ""
         activeSockets.forEach { runCatching { it.close() } }; activeSockets.clear()
-        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear(); offeredDeliveries.clear()
+        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear(); offeredDeliveries.clear(); offeredBlobs.clear(); engineOffers.clear()
     }
 
     private suspend fun handle(client: Socket, onClientSynced: (Int) -> Unit) {
@@ -156,7 +163,7 @@ object ClipboardSyncServer {
                 purge()
                 // Heartbeats only read the (cached) fingerprint and online list: never queue them
                 // behind a long merge, or every client times out and reports a disconnect.
-                val result = if (req.kind == "heartbeat") process(req, env.requestId, onClientSynced, controlAuthorized)
+                val result = if (req.kind == "heartbeat" || req.kind == "blob_get") process(req, env.requestId, onClientSynced, controlAuthorized)
                     else lock.withLock { process(req, env.requestId, onClientSynced, controlAuthorized) }
                 val outEnv = ClipboardSyncCrypto.encrypt(credential, env.requestId, env.clientId, json.encodeToString(result), ClipboardSyncCrypto.RESPONSE_DIRECTION)
                 writeResponse(s, 200, json.encodeToString(outEnv).toByteArray())
@@ -178,7 +185,35 @@ object ClipboardSyncServer {
             if (!mcpAuthorized || !McpServer.enabled) return ClipboardSyncWireResponse(false, requestId, "mcp", error = "MCP 未配置独立令牌或服务未启用")
             return ClipboardSyncWireResponse(true, requestId, "mcp", packetJson = McpServer.handle(req.packetJson ?: ""))
         }
-        if (req.kind == "heartbeat") return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId)
+        if (req.kind == "heartbeat") return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
+            // Only answer capabilities to a client that announced some: an old client's response stays byte-identical.
+            capabilities = if (req.capabilities.isEmpty()) emptyList() else ClipboardSyncCapabilities.negotiated(req.capabilities).toList())
+        if (req.kind == "blob_get") {
+            require(!mcpAuthorized) { "MCP token cannot read clipboard images" }
+            val sha = req.blobHash
+            require(ClipboardImageBlobs.isSha256(sha)) { "无效图片哈希" }
+            val offer = offeredBlobs[req.clientId]?.takeIf { System.currentTimeMillis() - it.at <= BLOB_OFFER_TTL }
+            // engine/1：上一轮会话里没拉完的图片，只要仍被本机未删除的条目引用就可以补拉（已删除条目的图片永不外发）。
+            val source = offer?.sources?.get(sha)
+                ?: (if (ClipboardSyncCapabilities.engineMode(req.capabilities)) ClipboardEngineSync.liveImage(sha!!)?.let { ClipboardImageBlobs.Source.FromFile(it) } else null)
+                ?: return ClipboardSyncWireResponse(false, requestId, "blob_get", error = "图片不在本次同步内容中")
+            val data = ClipboardImageBlobs.readBase64(source)
+                ?.takeIf { ClipboardImageBlobs.sha256OfBase64(it) == sha }
+                ?: return ClipboardSyncWireResponse(false, requestId, "blob_get", error = "主机上的图片已变化或缺失")
+            return ClipboardSyncWireResponse(true, requestId, "blob_get", blobData = data)
+        }
+        if (req.kind.startsWith("engine_") || req.kind == "blob_put") {
+            require(!mcpAuthorized) { "MCP token cannot authorize clipboard sync" }
+            require(req.clientId != ClipboardOplog.deviceId) { "不能将同步到本机当作另一台设备接收" }
+            if (!ClipboardSyncCapabilities.engineMode(req.capabilities)) return ClipboardSyncWireResponse(false, requestId, req.kind, error = "主机未协商 engine/1")
+            return try { processEngine(req, requestId, onClientSynced) }
+            catch (e: org.fcitx.fcitx5.android.data.clipboard.engine.ClockDriftException) {
+                ClipboardSyncWireResponse(false, requestId, req.kind, error = "对端设备时钟异常（版本时间超前过多），已整批拒收，请校准该设备时间")
+            }
+            catch (e: org.fcitx.fcitx5.android.data.clipboard.engine.BadOpException) {
+                ClipboardSyncWireResponse(false, requestId, req.kind, error = "同步操作格式无效，已整批拒收")
+            }
+        }
         if (req.kind == "full_preview") {
             require(!mcpAuthorized) { "MCP token cannot authorize clipboard preview" }
             val captured = ClipboardSnapshotStore.metadataCapture()
@@ -244,6 +279,7 @@ object ClipboardSyncServer {
         val packet = json.decodeFromString<ClipboardSyncPacket>(req.packetJson)
         require(packet.protocolVersion == ClipboardSyncCrypto.PROTOCOL_VERSION && packet.deviceId == req.clientId && packet.deviceId.isNotBlank()) { "packet identity or version invalid" }
         require(packet.deviceId != ClipboardOplog.deviceId) { "不能将同步到本机当作另一台设备接收" }
+        val blobMode = ClipboardSyncCapabilities.blobMode(req.capabilities)
         return ClipboardDelivery.withLock {
             val (applied, stats) = ClipboardSnapshotStore.mergeWithStats(packet)
             ClipboardDelivery.recordPeerReceipt(packet.deviceId, packet.entries.associate {
@@ -251,17 +287,84 @@ object ClipboardSyncServer {
             })
             ClipboardSyncNotifications.record(stats)
             if (applied > 0) onClientSynced(applied)
-            val captured = ClipboardSnapshotStore.capture()
+            val captured = ClipboardSnapshotStore.capture(blobMode)
             val inventory = ClipboardSyncDelta.inventory(captured.packet)
             val outgoing = ClipboardSyncDelta.difference(captured.packet, req.inventory, inventory)
+            if (blobMode) offeredBlobs[req.clientId] = OfferedBlobs(
+                ClipboardImageBlobs.referencedHashes(outgoing).mapNotNull { sha -> captured.blobs[sha]?.let { sha to it } }.toMap(),
+                System.currentTimeMillis())
             offeredDeliveries[req.clientId] = OfferedDelivery(ClipboardDelivery.ids(outgoing),
                 outgoing.entries.associate { it.syncId to ClipboardReceiptVersion.token(it.updatedAt, it.deviceId) })
             ClipboardDelivery.beginExposure(outgoing)
             ClipboardSyncWireResponse(true, requestId, "sync", captured.fingerprint, json.encodeToString(outgoing),
                 onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
                 inventory = if (req.inventory != null) inventory else null,
-                receivedEntryIds = ClipboardDelivery.ids(packet).toList())
+                receivedEntryIds = ClipboardDelivery.ids(packet).toList(),
+                capabilities = if (blobMode) listOf(ClipboardSyncCapabilities.BLOB_V1) else emptyList())
         }
+    }
+
+    private suspend fun processEngine(req: ClipboardSyncWireRequest, requestId: String, onClientSynced: (Int) -> Unit): ClipboardSyncWireResponse {
+        val caps = ClipboardSyncCapabilities.negotiated(req.capabilities).toList()
+        fun confirmCovered(vv: Map<String, Long>): List<String> = engineOffers[req.clientId]?.let { list ->
+            synchronized(list) {
+                val covered = list.filter { (vv[it.origin] ?: 0L) >= it.seq }
+                list.removeAll(covered.toSet())
+                covered.map { it.key }
+            }
+        }.orEmpty()
+        when (req.kind) {
+            "engine_hello" -> {
+                ClipboardEngineSync.recordPeer(req.clientId, req.vv, req.acks)
+                ClipboardDelivery.confirm(confirmCovered(req.vv))
+                ClipboardEngineSync.scan()
+                return ClipboardSyncWireResponse(true, requestId, req.kind, ClipboardSnapshotStore.fingerprint(),
+                    onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId, deviceId = ClipboardOplog.deviceId,
+                    capabilities = caps, vv = ClipboardEngineSync.versionVector(), acks = ClipboardEngineSync.ackGossip())
+            }
+            "engine_pull" -> {
+                ClipboardEngineSync.recordPeer(req.clientId, req.vv)
+                ClipboardDelivery.confirm(confirmCovered(req.vv))
+                return ClipboardDelivery.withSendFence { _ ->
+                    val (ops, hasMore) = ClipboardEngineSync.page(req.vv, if (req.limit > 0) req.limit else 200)
+                    val ids = ClipboardEngineSync.entryIds(ops)
+                    if (ids.isNotEmpty()) ClipboardDelivery.beginExposure(ClipboardEngineSync.exposurePacket(ids))
+                    engineOffers.getOrPut(req.clientId) { java.util.Collections.synchronizedList(ArrayList()) }
+                        .addAll(ops.filter { it.collection == ClipboardEngineMapping.ENTRIES }.map { EngineOffer(it.origin, it.seq, it.key) })
+                    val sources = ClipboardEngineSync.imageHashes(ops).mapNotNull { sha ->
+                        ClipboardEngineSync.blobFile(sha)?.let { sha to (ClipboardImageBlobs.Source.FromFile(it) as ClipboardImageBlobs.Source) }
+                    }.toMap()
+                    if (sources.isNotEmpty()) offeredBlobs.compute(req.clientId) { _, old ->
+                        val keep = old?.takeIf { System.currentTimeMillis() - it.at <= BLOB_OFFER_TTL }?.sources.orEmpty()
+                        OfferedBlobs(keep + sources, System.currentTimeMillis())
+                    }
+                    ClipboardSyncWireResponse(true, requestId, req.kind, onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
+                        capabilities = caps, vv = ClipboardEngineSync.versionVector(), ops = ops, hasMore = hasMore)
+                }
+            }
+            "engine_push" -> {
+                require(req.ops.size <= 1000) { "单页操作过多" }
+                val outcome = ClipboardEngineSync.applyRemote(req.ops)
+                ClipboardDelivery.recordPeerReceipt(req.clientId, ClipboardEngineSync.receiptVersions(req.ops))
+                outcome.stats?.let { ClipboardSyncNotifications.record(it) }
+                if (outcome.applied > 0) onClientSynced(outcome.applied)
+                val vv = ClipboardEngineSync.versionVector()
+                return ClipboardSyncWireResponse(true, requestId, req.kind, ClipboardSnapshotStore.fingerprint(),
+                    onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId, capabilities = caps, vv = vv,
+                    missingBlobs = ClipboardEngineSync.waitingBlobs().keys.toList(), receivedEntryIds = ClipboardEngineSync.entryIds(req.ops).toList())
+            }
+            "blob_put" -> {
+                val sha = req.blobHash
+                require(ClipboardImageBlobs.isSha256(sha)) { "无效图片哈希" }
+                val bytes = java.util.Base64.getDecoder().decode(req.blobData ?: error("缺少图片数据"))
+                val outcome = ClipboardEngineSync.acceptBlob(sha!!, bytes)
+                outcome.stats?.let { ClipboardSyncNotifications.record(it) }
+                if (outcome.applied > 0) onClientSynced(outcome.applied)
+                return ClipboardSyncWireResponse(true, requestId, req.kind, ClipboardSnapshotStore.fingerprint(), capabilities = caps,
+                    missingBlobs = ClipboardEngineSync.waitingBlobs().keys.toList())
+            }
+        }
+        throw IllegalArgumentException("invalid engine request")
     }
 
     private fun setRemainingTimeout(socket: Socket, deadline: Long) {

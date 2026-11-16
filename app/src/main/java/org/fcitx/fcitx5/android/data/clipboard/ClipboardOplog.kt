@@ -30,11 +30,16 @@ object ClipboardOplog {
     const val OP_HISTORY_ENTRY = "HISTORY_ENTRY"
     const val OP_HISTORY_GROUP = "HISTORY_GROUP"
 
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
     @Serializable data class EntryOp(
         val text: String, val pinned: Boolean, val timestamp: Long, val type: String,
         val sensitive: Boolean, val deleted: Boolean, val groupName: String = "",
         val imagePath: String? = null, val groupSyncId: String = "",
         val sortOrder: Long = 0, val imageData: String? = null,
+        /** 仅在线上（blob/1）出现；落入本地日志前一律还原为内联 imageData 并清空本字段，
+         *  所以日志格式与历史版本 id 的计算方式都不变。 */
+        @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+        val imageSha256: String? = null,
     )
     @Serializable data class GroupOp(val name: String, val sortOrder: Int)
     @Serializable data class Op(
