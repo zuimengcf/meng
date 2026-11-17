@@ -77,21 +77,24 @@ class SchemaListAdapter(
 
             val installed = installedVersions[source.schemaId]
             val hasUpdate = installed != null && SchemaMarketManager.hasUpdate(source)
-            // 显式展示已装版本与安装状态：已装显示「已安装 vX」，未装显示「未安装」，
-            // 有更新时追加「可更新至 vY」，而不是让用户仅凭按钮文字猜测。
+            // 展示版本：优先锚定的具体版本（LTS 资产日期 / git 短 SHA），避免出现 "vLTS"、"git·main" 这类无信息标签
+            val shownVersion = source.displayVersion ?: source.version
             val statusLine = when {
                 source.versionCheckFailed -> ctx.getString(R.string.schema_version_check_failed)
-                installed == null -> ctx.getString(R.string.schema_not_installed)
+                installed == null -> if (source.displayVersion != null && source.assetFingerprint != null) {
+                    // LTS 类源：未安装时直接展示锚定版本
+                    ctx.getString(R.string.schema_latest_version, shownVersion)
+                } else ctx.getString(R.string.schema_not_installed)
                 hasUpdate -> ctx.getString(
                     R.string.schema_update_available,
-                    source.version
+                    shownVersion
                 )
                 else -> ""
             }
             var descText = ctx.getString(
                 R.string.schema_market_desc,
                 source.schemaId,
-                source.version,
+                shownVersion,
             )
             if (installed != null) {
                 descText += ctx.getString(R.string.schema_installed, installed)

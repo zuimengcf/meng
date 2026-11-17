@@ -29,7 +29,8 @@ object SchemaMarketManager {
     private const val DOWNLOAD_BUFFER_SIZE = 1 shl 16
 
     data class ReleaseProbe(val version: String?, val checked: Boolean)
-    data class AssetFingerprintProbe(val fingerprint: String?, val checked: Boolean)
+    data class AssetFingerprintProbe(val fingerprint: String?, val checked: Boolean, val version: String? = null)
+    data class GitHeadProbe(val version: String?, val checked: Boolean)
 
     /** Query the latest tag, then try GitHub's /releases/latest redirect if the API is unavailable. */
     suspend fun fetchLatestRelease(
@@ -119,7 +120,15 @@ object SchemaMarketManager {
                 val digest = asset.optString("digest").takeIf {
                     it.startsWith("sha256:", ignoreCase = true) && it.substringAfter(':').matches(Regex("(?i)[0-9a-f]{64}"))
                 }
-                digest ?: "asset:${asset.optString("id")}:${asset.optString("updated_at")}:${asset.optLong("size", -1)}"
+                // LTS tag 永远叫 LTS：用资产更新时间（如 2026-11-14）作为可锚定的版本号，
+                // 替代永远不变的 "LTS"，让用户看到具体版本。
+                val updatedAt = asset.optString("updated_at").takeIf { it.isNotBlank() }
+                    ?.substringBefore('T') ?: null
+                Triple(
+                    digest ?: "asset:${asset.optString("id")}:${asset.optString("updated_at")}:${asset.optLong("size", -1)}",
+                    updatedAt,
+                    asset.optLong("size", -1),
+                )
             } finally {
                 conn.disconnect()
             }
@@ -130,10 +139,43 @@ object SchemaMarketManager {
         val prefs = context.applicationContext.getSharedPreferences(RELEASE_CACHE, Context.MODE_PRIVATE)
         val key = "asset_${source.owner}_${source.repo}_${source.assetName}"
         if (found != null) {
-            prefs.edit().putString(key, found).apply()
-            AssetFingerprintProbe(found, checked = true)
+            prefs.edit().putString(key, found.first).apply()
+            AssetFingerprintProbe(found.first, checked = true, version = found.second)
         } else {
             AssetFingerprintProbe(prefs.getString(key, null), checked = false)
+        }
+    }
+
+    /** Query the current HEAD commit of a git-source branch, as an anchorable version (e.g. abcd123). */
+    suspend fun fetchGitHead(
+        source: SchemaSource,
+        context: Context = appContext,
+    ): GitHeadProbe = withContext(Dispatchers.IO) {
+        val endpoint = "https://api.github.com/repos/${source.owner}/${source.repo}/commits/${source.gitBranch}"
+        val verified = runCatching {
+            val conn = URL(endpoint).openConnection() as HttpURLConnection
+            conn.connectTimeout = 12000
+            conn.readTimeout = 12000
+            conn.setRequestProperty("Accept", "application/vnd.github+json")
+            conn.setRequestProperty("User-Agent", "Meng-InputMethod/0.1")
+            try {
+                if (conn.responseCode !in 200..299) return@runCatching null
+                val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                json.optString("sha").takeIf { it.matches(Regex("[0-9a-f]{40}")) }?.take(7)
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrElse {
+            Timber.w(it, "Git head probe failed: $endpoint")
+            null
+        }
+        val prefs = context.applicationContext.getSharedPreferences(RELEASE_CACHE, Context.MODE_PRIVATE)
+        val cacheKey = "githead_${source.owner}_${source.repo}_${source.gitBranch}"
+        if (verified != null) {
+            prefs.edit().putString(cacheKey, verified).apply()
+            GitHeadProbe(verified, checked = true)
+        } else {
+            GitHeadProbe(prefs.getString(cacheKey, null), checked = false)
         }
     }
 
@@ -256,6 +298,8 @@ object SchemaMarketManager {
                 listOf(SchemaMirror("GitHub 源码", source.gitUrl))
             } else source.mirrors
             var lastError = "下载失败，请检查网络或换镜像重试"
+            // 安装记录用可锚定版本（如 LTS 资产日期 / git 短 SHA），让「已安装 vX」显示真实版本，而非恒定的 LTS tag
+            val recordVersion = source.displayVersion ?: source.version
             val installed = SchemaMarketFileOps.firstSuccessfulMirror(mirrors) { mirror ->
                 val temp = createTempFile(dataDir, source.schemaId, "download", ".part")
                 try {
@@ -267,12 +311,12 @@ object SchemaMarketManager {
                             else source.assetFingerprint ?: contentFingerprint
                         installSingleArtifact(
                             downloaded, dataDir, source.schemaId, source.assetName,
-                            source.version, recordedFingerprint, context,
+                            recordVersion, recordedFingerprint, context,
                         )
                     } else {
-                        installArchive(downloaded, source, context)
+                        installArchive(downloaded, source.copy(version = recordVersion), context)
                     }
-                    InstallResult(true, null, source.version)
+                    InstallResult(true, null, recordVersion)
                 } catch (error: Exception) {
                     lastError = error.message ?: "文件校验或安装失败"
                     Timber.w(error, "Schema install attempt failed from ${mirror.url}")

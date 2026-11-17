@@ -60,11 +60,26 @@ internal object SchemaMarketFileOps {
             versionCheckFailed = !checked,
         )
 
-    fun sourceWithAssetProbe(source: SchemaSource, fingerprint: String?, checked: Boolean): SchemaSource =
-        source.copy(
-            assetFingerprint = fingerprint,
+    fun sourceWithAssetProbe(
+        source: SchemaSource,
+        fingerprint: String?,
+        checked: Boolean,
+        displayVersion: String? = null,
+    ): SchemaSource = source.copy(
+        assetFingerprint = fingerprint,
+        versionCheckFailed = !checked,
+        displayVersion = displayVersion ?: source.displayVersion,
+    )
+
+    /** git 源：把分支 HEAD 短 SHA 作为可锚定版本（version 与展示都用它，更新检测才能生效）。 */
+    fun sourceWithGitHead(source: SchemaSource, head: String?, checked: Boolean): SchemaSource {
+        val sha = head?.takeIf { it.isNotBlank() } ?: return source.copy(versionCheckFailed = !checked)
+        return source.copy(
+            version = "git·$sha",
+            displayVersion = "git·$sha",
             versionCheckFailed = !checked,
         )
+    }
 
     fun hasUpdate(
         installedVersion: String?,
@@ -72,8 +87,12 @@ internal object SchemaMarketFileOps {
         installedFingerprint: String? = null,
     ): Boolean {
         if (installedVersion == null || latest.versionCheckFailed) return false
-        return installedVersion != latest.version ||
-            (latest.assetFingerprint != null && installedFingerprint != latest.assetFingerprint)
+        // 资产型/LTS 源（如 lmdg）：tag 恒定（LTS），版本号字符串比对没有意义，
+        // 以资产指纹（SHA-256）是否变化为准；指纹相同即无更新。
+        if (latest.assetFingerprint != null) {
+            return installedFingerprint != null && installedFingerprint != latest.assetFingerprint
+        }
+        return installedVersion != latest.version
     }
 
     fun serializeOwnershipManifest(files: Map<String, String>): String = files.toSortedMap().entries

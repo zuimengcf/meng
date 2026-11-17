@@ -78,9 +78,7 @@ class SchemaMarketViewModel : ViewModel() {
             val fallback = SchemaSources.allFallback()
             // release 方案优先使用 API/重定向的最新 tag；LTS 即使 tag 不变也检查资产指纹。
             val sources = fallback.mapNotNull { f ->
-                if (f.isGitSource) {
-                    f // git 源码源：直接展示，不探测 release 版本
-                } else if (f.schemaId == "wanxiang") {
+                if (f.schemaId == "wanxiang") {
                     val probe = SchemaMarketManager.fetchLatestRelease(f)
                     val base = SchemaSources.wanxiangLatest(
                         probe.version ?: SchemaSources.WANXIANG_FALLBACK_TAG,
@@ -94,7 +92,11 @@ class SchemaMarketViewModel : ViewModel() {
                     SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
                 } else if (f.schemaId == "wanxiang-lmdg") {
                     val probe = SchemaMarketManager.fetchReleaseAssetFingerprint(f)
-                    SchemaMarketFileOps.sourceWithAssetProbe(f, probe.fingerprint, probe.checked)
+                    SchemaMarketFileOps.sourceWithAssetProbe(f, probe.fingerprint, probe.checked, probe.version)
+                } else if (f.isGitSource) {
+                    // git 源码源：探测分支 HEAD 短 SHA 作为可锚定版本（不再显示 git·main 这种无版本信息的标签）
+                    val probe = SchemaMarketManager.fetchGitHead(f)
+                    SchemaMarketFileOps.sourceWithGitHead(f, probe.version, probe.checked)
                 } else {
                     f
                 }

@@ -65,6 +65,12 @@ data class SchemaSource(
     val assetName: String,
     /** 探测到的最新版本号（去掉 v 前缀），用于展示与更新比对 */
     val version: String,
+    /**
+     * 展示用锚定版本（如 LTS 资产的更新时间 2026-11-14、git 源的 commit 前 7 位）。
+     * 与 [version] 解耦：version 保持 tag/分支供 URL 与 API 使用，此处是给用户看的具体版本。
+     * 为 null 时界面回退显示 [version]。
+     */
+    val displayVersion: String? = null,
     /** 下载源列表（官方源 + 国内镜像），带连通状态，仅用于下载/复制/浏览器打开 */
     val mirrors: List<SchemaMirror>,
     /** 重量级可选组件提示文案（如大模型语法包，需另行下载），无则不显示 */

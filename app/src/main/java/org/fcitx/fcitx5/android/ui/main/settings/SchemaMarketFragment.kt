@@ -64,6 +64,16 @@ class SchemaMarketFragment : Fragment() {
         )
         list.adapter = adapter
 
+        // 手动检测：重新探测全部方案的版本与镜像延迟
+        view.findViewById<View>(R.id.schema_refresh_btn).setOnClickListener {
+            viewModel.refreshSources()
+            android.widget.Toast.makeText(
+                requireContext(),
+                R.string.schema_check_latency_started,
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+
         viewModel.sources.observe(viewLifecycleOwner) { adapter.submitList(it) }
         viewModel.installedVersions.observe(viewLifecycleOwner) { adapter.notifyInstalled(it) }
         viewModel.busy.observe(viewLifecycleOwner) { adapter.notifyBusy(it) }
