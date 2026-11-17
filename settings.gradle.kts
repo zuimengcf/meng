@@ -12,6 +12,9 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
+        // Mirror first: repo.maven.apache.org returns 403 for some artifacts
+        // (e.g. splitties release variants); aliyun serves them fine.
+        maven("https://maven.aliyun.com/repository/central")
         mavenCentral()
     }
 }
