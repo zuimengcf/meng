@@ -378,10 +378,10 @@
     <string name="schema_market_empty">暂无可安装方案</string>
     <string name="schema_check_latency">重新检测版本与网络</string>
     <string name="schema_check_latency_started">正在检测全部方案版本与镜像延迟…</string>
-    <string name="schema_installed" formatted="false">已安装 v%1$s</string>
+    <string name="schema_installed" formatted="false">已安装 %1$s</string>
     <string name="schema_not_installed">未安装</string>
-    <string name="schema_update_available" formatted="false">可更新至 v%1$s</string>
-    <string name="schema_latest_version" formatted="false">最新版本 v%1$s</string>
+    <string name="schema_update_available" formatted="false">可更新至 %1$s</string>
+    <string name="schema_latest_version" formatted="false">最新版本 %1$s</string>
     <string name="schema_version_check_failed">无法检查最新版本；显示的版本可能不是最新</string>
     <string name="schema_version_check_failed_action">查看下载源</string>
     <string name="schema_download">下载</string>

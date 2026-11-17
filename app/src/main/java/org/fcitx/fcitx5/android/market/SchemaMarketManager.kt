@@ -30,7 +30,7 @@ object SchemaMarketManager {
 
     data class ReleaseProbe(val version: String?, val checked: Boolean)
     data class AssetFingerprintProbe(val fingerprint: String?, val checked: Boolean, val version: String? = null)
-    data class GitHeadProbe(val version: String?, val checked: Boolean)
+    data class GitHeadProbe(val version: String?, val date: String?, val checked: Boolean)
 
     /** Query the latest tag, then try GitHub's /releases/latest redirect if the API is unavailable. */
     suspend fun fetchLatestRelease(
@@ -146,7 +146,10 @@ object SchemaMarketManager {
         }
     }
 
-    /** Query the current HEAD commit of a git-source branch, as an anchorable version (e.g. abcd123). */
+    /**
+     * Query the current HEAD commit of a git-source branch.
+     * 返回 commit 日期（给人看，如 2026-06-30）与完整 SHA（给更新判定用）。
+     */
     suspend fun fetchGitHead(
         source: SchemaSource,
         context: Context = appContext,
@@ -161,7 +164,11 @@ object SchemaMarketManager {
             try {
                 if (conn.responseCode !in 200..299) return@runCatching null
                 val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-                json.optString("sha").takeIf { it.matches(Regex("[0-9a-f]{40}")) }?.take(7)
+                val sha = json.optString("sha").takeIf { it.matches(Regex("[0-9a-f]{40}")) } ?: return@runCatching null
+                // commit.committer.date 形如 2026-06-30T12:34:56Z -> 取日期部分
+                val date = json.optJSONObject("commit")?.optJSONObject("committer")
+                    ?.optString("date")?.takeIf { it.isNotBlank() }?.substringBefore('T')
+                sha to date
             } finally {
                 conn.disconnect()
             }
@@ -170,12 +177,16 @@ object SchemaMarketManager {
             null
         }
         val prefs = context.applicationContext.getSharedPreferences(RELEASE_CACHE, Context.MODE_PRIVATE)
-        val cacheKey = "githead_${source.owner}_${source.repo}_${source.gitBranch}"
+        val shaKey = "githead_${source.owner}_${source.repo}_${source.gitBranch}"
+        val dateKey = "gitdate_${source.owner}_${source.repo}_${source.gitBranch}"
         if (verified != null) {
-            prefs.edit().putString(cacheKey, verified).apply()
-            GitHeadProbe(verified, checked = true)
+            prefs.edit()
+                .putString(shaKey, verified.first)
+                .putString(dateKey, verified.second)
+                .apply()
+            GitHeadProbe(verified.first, verified.second, checked = true)
         } else {
-            GitHeadProbe(prefs.getString(cacheKey, null), checked = false)
+            GitHeadProbe(prefs.getString(shaKey, null), prefs.getString(dateKey, null), checked = false)
         }
     }
 
@@ -400,7 +411,7 @@ object SchemaMarketManager {
                 SchemaMarketFileOps.Replacement(File(staging, relative), File(dataDir, relative))
             }.toMutableList()
             replacements += installStateReplacements(
-                context, source.schemaId, source.version, null, ownership,
+                context, source.schemaId, source.version, source.assetFingerprint, ownership,
             )
             applyInDataDir(dataDir, replacements)
         } finally {

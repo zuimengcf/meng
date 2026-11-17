@@ -94,9 +94,9 @@ class SchemaMarketViewModel : ViewModel() {
                     val probe = SchemaMarketManager.fetchReleaseAssetFingerprint(f)
                     SchemaMarketFileOps.sourceWithAssetProbe(f, probe.fingerprint, probe.checked, probe.version)
                 } else if (f.isGitSource) {
-                    // git 源码源：探测分支 HEAD 短 SHA 作为可锚定版本（不再显示 git·main 这种无版本信息的标签）
+                    // git 源码源：探测分支 HEAD commit（日期给人看、完整 SHA 给更新判定），不再显示 git·main 这类无版本信息的标签
                     val probe = SchemaMarketManager.fetchGitHead(f)
-                    SchemaMarketFileOps.sourceWithGitHead(f, probe.version, probe.checked)
+                    SchemaMarketFileOps.sourceWithGitHead(f, probe.version, probe.date, probe.checked)
                 } else {
                     f
                 }

@@ -71,12 +71,24 @@ internal object SchemaMarketFileOps {
         displayVersion = displayVersion ?: source.displayVersion,
     )
 
-    /** git 源：把分支 HEAD 短 SHA 作为可锚定版本（version 与展示都用它，更新检测才能生效）。 */
-    fun sourceWithGitHead(source: SchemaSource, head: String?, checked: Boolean): SchemaSource {
-        val sha = head?.takeIf { it.isNotBlank() } ?: return source.copy(versionCheckFailed = !checked)
+    /**
+     * git 源：把分支 HEAD 落地为可锚定版本。
+     * 展示用 commit 日期（如 2026-06-30，直观），判定用完整 SHA（assetFingerprint =
+     * "git:<full sha>"），使 hasUpdate 走指纹比对——同一天多次提交也能准确判更新。
+     */
+    fun sourceWithGitHead(
+        source: SchemaSource,
+        sha: String?,
+        date: String?,
+        checked: Boolean,
+    ): SchemaSource {
+        val fullSha = sha?.takeIf { it.isNotBlank() && it.length >= 7 } ?: return source.copy(versionCheckFailed = !checked)
+        val shortSha = fullSha.take(7)
+        val shownVersion = date?.takeIf { it.isNotBlank() } ?: "git·$shortSha"
         return source.copy(
-            version = "git·$sha",
-            displayVersion = "git·$sha",
+            version = "git·$shortSha",
+            displayVersion = shownVersion,
+            assetFingerprint = "git:$fullSha",
             versionCheckFailed = !checked,
         )
     }
@@ -87,10 +99,15 @@ internal object SchemaMarketFileOps {
         installedFingerprint: String? = null,
     ): Boolean {
         if (installedVersion == null || latest.versionCheckFailed) return false
-        // 资产型/LTS 源（如 lmdg）：tag 恒定（LTS），版本号字符串比对没有意义，
-        // 以资产指纹（SHA-256）是否变化为准；指纹相同即无更新。
+        // 资产型/LTS 源（如 lmdg、git 源）：tag 恒定或 commit 频繁，版本号字符串比对没有意义，
+        // 以资产指纹（SHA-256 / git:全SHA）是否变化为准；指纹相同即无更新。
+        // 旧版安装未记录指纹时回退版本号比对（git 源旧记录为 git·main / git·短SHA，仍可判）。
         if (latest.assetFingerprint != null) {
-            return installedFingerprint != null && installedFingerprint != latest.assetFingerprint
+            return if (installedFingerprint != null) {
+                installedFingerprint != latest.assetFingerprint
+            } else {
+                installedVersion != latest.version
+            }
         }
         return installedVersion != latest.version
     }

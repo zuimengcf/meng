@@ -246,6 +246,44 @@ class SchemaMarketFileOpsTest {
     }
 
     @Test
+    fun gitSourceShowsCommitDateButUpdatesByFullShaFingerprint() {
+        val ice = SchemaMarketFileOps.sourceWithGitHead(
+            SchemaSources.iceGitSource(),
+            sha = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c",
+            date = "2026-06-30",
+            checked = true,
+        )
+        // 展示用日期（人可读），判定用全 SHA 指纹
+        assertEquals("2026-06-30", ice.displayVersion)
+        assertEquals("git·a1b2c3d", ice.version)
+        assertEquals("git:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c", ice.assetFingerprint)
+        assertFalse(ice.versionCheckFailed)
+
+        // 同一次安装（指纹一致）无更新
+        assertFalse(SchemaMarketFileOps.hasUpdate("git·a1b2c3d", ice, "git:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c"))
+        // 同一天换了新 commit（指纹变化）也能判更新
+        val nextCommit = SchemaMarketFileOps.sourceWithGitHead(
+            SchemaSources.iceGitSource(),
+            sha = "f0e1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d5",
+            date = "2026-06-30",
+            checked = true,
+        )
+        assertTrue(SchemaMarketFileOps.hasUpdate("git·a1b2c3d", nextCommit, "git:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c"))
+        // 旧版安装未记录指纹：回退版本号比对（仍是 git·短SHA，可比对）
+        assertFalse(SchemaMarketFileOps.hasUpdate("git·a1b2c3d", ice))
+        // 旧版安装记录为 git·main 这类无版本信息标签：判定有新版本
+        assertTrue(SchemaMarketFileOps.hasUpdate("git·main", ice))
+        // 无日期时回退短 SHA 展示
+        val noDate = SchemaMarketFileOps.sourceWithGitHead(
+            SchemaSources.iceGitSource(),
+            sha = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c",
+            date = null,
+            checked = true,
+        )
+        assertEquals("git·a1b2c3d", noDate.displayVersion)
+    }
+
+    @Test
     fun uninstallRemovesOwnedModelButKeepsSharedFilesAndSuppressesStaleInstallDetection() = withTempDir { root ->
         val model = File(root, "wanxiang-lts-zh-hans.gram").apply { writeText("model") }
         val shared = File(root, "shared.dict.yaml").apply { writeText("shared") }
