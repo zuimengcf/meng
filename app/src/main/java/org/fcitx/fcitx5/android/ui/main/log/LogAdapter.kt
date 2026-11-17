@@ -20,18 +20,22 @@ class LogAdapter(private val entries: ArrayList<CharSequence> = ArrayList()) :
     inner class Holder(val textView: TextView) : RecyclerView.ViewHolder(textView)
 
     fun append(line: CharSequence) {
-        val size = entries.size
-        entries.add(line)
-        notifyItemInserted(size)
+        synchronized(entries) {
+            val size = entries.size
+            entries.add(line)
+            notifyItemInserted(size)
+        }
     }
 
     fun clear() {
-        val size = entries.size
-        entries.clear()
-        notifyItemRangeRemoved(0, size)
+        synchronized(entries) {
+            val size = entries.size
+            entries.clear()
+            notifyItemRangeRemoved(0, size)
+        }
     }
 
-    fun fullLogString() = entries.joinToString("\n")
+    fun fullLogString() = synchronized(entries) { entries.joinToString("\n") }
 
     override fun getItemCount() = entries.size
 

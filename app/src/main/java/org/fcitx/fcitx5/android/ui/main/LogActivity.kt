@@ -43,11 +43,16 @@ class LogActivity : AppCompatActivity() {
             if (uri == null) return@registerForActivityResult
             lifecycleScope.launch {
                 runCatching {
+                    // Snapshot the log on the main thread (same thread as logcat append),
+                    // then hand the immutable string to the IO writer: avoids the
+                    // ConcurrentModificationException from iterating the live log list
+                    // on a background thread while the UI keeps appending.
+                    val body = logView.currentLog
                     withContext(Dispatchers.IO) {
                         contentResolver.openOutputStream(uri)!!.use { stream ->
                             stream.bufferedWriter().use { writer ->
                                 writer.write(DeviceInfo.get(this@LogActivity))
-                                writer.write(logView.currentLog)
+                                writer.write(body)
                             }
                         }
                     }
