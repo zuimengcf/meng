@@ -32,7 +32,9 @@ object ClipboardSyncClient {
     private val json = Json { ignoreUnknownKeys = true }
     private const val HEARTBEAT_MS = 1_000L
     private const val CONNECT_TIMEOUT_MS = 8_000
-    private const val READ_TIMEOUT_MS = 60_000
+    // Must be at least as generous as the server's connection lifetime (300s) so a large
+    // image-backed snapshot response is never cut mid-envelope by this side's timeout.
+    private const val READ_TIMEOUT_MS = 180_000
     private const val MAX_BODY = 128 * 1024 * 1024
     private const val ENGINE_PAGE = 200
     private const val MAX_PAGES = 100_000
@@ -431,11 +433,15 @@ object ClipboardSyncClient {
             }
             afterExposure?.invoke()
             output.use { it.write(body) }
-            if (conn.responseCode != 200) throw IllegalStateException("主机返回 HTTP ${conn.responseCode}")
+            if (conn.responseCode != 200) throw IllegalStateException("主机返回 HTTP ${conn.responseCode}${readServerError(conn).let { e -> if (e.isNotEmpty()) "：$e" else "" }}")
             val responseEnvelope = readBounded(conn.inputStream, MAX_BODY)
             val wire = json.decodeFromString<ClipboardSyncEnvelope>(responseEnvelope)
             if (wire.requestId != id || wire.clientId != req.clientId) throw SecurityException("响应未绑定请求")
-            val result = json.decodeFromString<ClipboardSyncWireResponse>(ClipboardSyncCrypto.decrypt(password, wire, ClipboardSyncCrypto.RESPONSE_DIRECTION))
+            val result = try {
+                json.decodeFromString<ClipboardSyncWireResponse>(ClipboardSyncCrypto.decrypt(password, wire, ClipboardSyncCrypto.RESPONSE_DIRECTION))
+            } catch (e: javax.crypto.AEADBadTagException) {
+                throw IllegalStateException("同步数据在传输中被截断或损坏（响应密文校验失败，常见于图片等大内容未完整接收），请重试")
+            }
             if (result.requestId != id) throw SecurityException("响应请求号不匹配")
             if (result.kind != req.kind) throw SecurityException("响应操作类型不匹配")
             if (!result.ok) throw IllegalStateException(result.error ?: "同步失败")
@@ -448,6 +454,15 @@ object ClipboardSyncClient {
         while (true) { val n = input.read(buf); if (n < 0) break; total += n; if (total > max) throw IllegalArgumentException("响应过大"); out.write(buf, 0, n) }
         return out.toString(Charsets.UTF_8.name())
     }
+
+    /** 读取服务端在非 200 响应里写的明文原因（"认证失败"/"同步请求被拒绝…"），供诊断展示。 */
+    private fun readServerError(conn: HttpURLConnection): String = runCatching {
+        conn.errorStream?.use { input ->
+            val out = java.io.ByteArrayOutputStream(); val buf = ByteArray(2048); var total = 0
+            while (true) { val n = input.read(buf); if (n < 0) break; total += n; if (total > 4096) break; out.write(buf, 0, n) }
+            out.toString(Charsets.UTF_8.name()).trim().take(256)
+        } ?: ""
+    }.getOrDefault("")
 
     private fun normalizeBaseUrl(raw: String): String {
         val value = raw.trim().let { if (it.contains("://")) it else "http://$it" }

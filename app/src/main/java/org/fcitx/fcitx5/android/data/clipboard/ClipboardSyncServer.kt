@@ -40,7 +40,9 @@ object ClipboardSyncServer {
     private const val MAX_HEADER = 16 * 1024
     private const val MAX_BODY = 128 * 1024 * 1024
     private const val HEADER_TIMEOUT_MS = 10_000
-    private const val BODY_TIMEOUT_MS = 30_000
+    // Request body upload (incl. inline image base64) can be large; match the client's 180s read
+    // timeout and the 300s connection lifetime so a slow upload is never cut mid-envelope.
+    private const val BODY_TIMEOUT_MS = 180_000
     private val online = ConcurrentHashMap<String, Long>()
     private val requestIds = ConcurrentHashMap<String, Long>()
     private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
@@ -113,7 +115,10 @@ object ClipboardSyncServer {
         client.use { s ->
             var reservedBytes = 0L
             // SO_TIMEOUT does not bound writes: also close clients that stop reading a response.
-            val lifetime = scope.launch { delay(60_000L); runCatching { s.close() } }
+            // Keep the guard generous: large image-backed snapshots can legitimately take minutes
+            // to upload/download on Wi-Fi, and killing the socket mid-write truncates the GCM
+            // envelope, surfacing on the client as a BAD_DECRYPT (1e000065) corruption error.
+            val lifetime = scope.launch { delay(300_000L); runCatching { s.close() } }
             try {
                 s.soTimeout = HEADER_TIMEOUT_MS
                 val headerDeadline = System.nanoTime() + HEADER_TIMEOUT_MS * 1_000_000L
