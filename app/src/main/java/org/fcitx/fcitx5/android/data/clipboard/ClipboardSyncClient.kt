@@ -107,6 +107,11 @@ object ClipboardSyncClient {
                         Timber.w("clipboard content merge incomplete (%s)", e.javaClass.simpleName)
                         delay(5_000L)
                     }
+                } else {
+                    // 心跳正常、指纹一致且没有待处理交换：说明之前的传输错误（如一次性的
+                    // AEADBadTag 截断/抖动）已经不再阻塞，但 lastSyncError 仍残留着旧文案，
+                    // 导致「同步成功了提示还在」。链路健康时清除残留错误。
+                    lastSyncError = null
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
