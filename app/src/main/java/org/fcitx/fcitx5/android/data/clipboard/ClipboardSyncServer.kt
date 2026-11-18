@@ -36,7 +36,7 @@ object ClipboardSyncServer {
     private var socket: ServerSocket? = null
     private var serverPort = 0
     @Volatile private var password = ""
-    private const val TTL = 15_000L
+    private const val TTL = 2 * 60 * 60_000L // 客户端小时级探活；在线标记保持 2 小时不过期
     private const val MAX_HEADER = 16 * 1024
     private const val MAX_BODY = 128 * 1024 * 1024
     private const val HEADER_TIMEOUT_MS = 10_000
