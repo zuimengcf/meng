@@ -6,6 +6,7 @@ package org.fcitx.fcitx5.android.market
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -190,10 +191,12 @@ object SchemaMarketManager {
         }
     }
 
-    /** HEAD first; if it is blocked or unsupported, try a bounded Range GET. */
+    /** 并发探测该源所有镜像的连通性（节省时间，串行会因单个镜像超时拖慢界面）。 */
     suspend fun probeLinks(source: SchemaSource): SchemaSource = withContext(Dispatchers.IO) {
         val updated = source.mirrors.map { mirror ->
-            val result = probeOne(mirror.url)
+            mirror to async { probeOne(mirror.url) }
+        }.map { (mirror, deferred) ->
+            val result = deferred.await()
             mirror.copy(status = result.status, latencyMs = result.latencyMs)
         }
         source.copy(mirrors = updated)
@@ -212,8 +215,8 @@ object SchemaMarketManager {
 
     private fun requestProbe(url: String, method: String): Long? = runCatching {
         val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 8000
-        conn.readTimeout = 8000
+        conn.connectTimeout = 4000
+        conn.readTimeout = 4000
         conn.instanceFollowRedirects = true
         conn.requestMethod = method
         conn.setRequestProperty("User-Agent", "Meng-InputMethod/0.1")

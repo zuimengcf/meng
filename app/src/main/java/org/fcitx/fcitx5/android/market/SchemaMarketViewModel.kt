@@ -72,48 +72,61 @@ class SchemaMarketViewModel : ViewModel() {
      * 异步探测各方案的最新 release，并据此动态构造源的版本与链接，
      * 随后对下载源做连通性探测。
      * 探测失败时用兜底源（仅展示，不作为更新判定依据）。
+     *
+     * 为避免方案商店白屏，先立即把离线兜底源列表渲染出来（同步），
+     * 再在后台逐个探测并增量替换：界面有内容可看，探测结果到多少更多少。
      */
     fun refreshSources() {
+        // 立即展示兜底源并标记「检测中」，保证页面第一时间有内容（不因网络探测阻塞而白屏），
+        // 也不把未探测的兜底值当作真实版本展示；后台对每个源做一次「版本探测 + 镜像探测」合并更新。
+        _sources.value = SchemaSources.allFallback().map { it.copy(checking = true) }
+        refreshInstalled()
         viewModelScope.launch {
-            val fallback = SchemaSources.allFallback()
-            // release 方案优先使用 API/重定向的最新 tag；LTS 即使 tag 不变也检查资产指纹。
-            val sources = fallback.mapNotNull { f ->
-                if (f.schemaId == "wanxiang") {
-                    val probe = SchemaMarketManager.fetchLatestRelease(f)
-                    val base = SchemaSources.wanxiangLatest(
-                        probe.version ?: SchemaSources.WANXIANG_FALLBACK_TAG,
-                    )
-                    SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
-                } else if (f.schemaId == "rime_frost") {
-                    val probe = SchemaMarketManager.fetchLatestRelease(f)
-                    val base = SchemaSources.frostLatest(
-                        probe.version ?: SchemaSources.FROST_FALLBACK_TAG,
-                    )
-                    SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
-                } else if (f.schemaId == "wanxiang-lmdg") {
-                    val probe = SchemaMarketManager.fetchReleaseAssetFingerprint(f)
-                    SchemaMarketFileOps.sourceWithAssetProbe(f, probe.fingerprint, probe.checked, probe.version)
-                } else if (f.isGitSource) {
-                    // git 源码源：探测分支 HEAD commit（日期给人看、完整 SHA 给更新判定），不再显示 git·main 这类无版本信息的标签
-                    val probe = SchemaMarketManager.fetchGitHead(f)
-                    SchemaMarketFileOps.sourceWithGitHead(f, probe.version, probe.date, probe.checked)
-                } else {
-                    f
-                }
+            SchemaSources.allFallback().forEach { f ->
+                val probed = probeOne(f) ?: f.copy(checking = false)
+                val withMirrors = SchemaMarketManager.probeLinks(probed.copy(checking = false))
+                val current = _sources.value.orEmpty()
+                _sources.value = current.map { if (it.schemaId == withMirrors.schemaId) withMirrors else it }
             }
-            _sources.value = sources
-            sources.forEach { probeMirrors(it) }
         }
     }
 
-    /** 对给定源的所有下载链接做连通性探测 */
+    /** 探测单个源的最新版本，返回探测后的源；失败返回 null（保持兜底）。 */
+    private suspend fun probeOne(f: SchemaSource): SchemaSource? = when {
+        f.schemaId == "wanxiang" -> {
+            val probe = SchemaMarketManager.fetchLatestRelease(f)
+            val base = SchemaSources.wanxiangLatest(
+                probe.version ?: SchemaSources.WANXIANG_FALLBACK_TAG,
+            )
+            SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
+        }
+        f.schemaId == "rime_frost" -> {
+            val probe = SchemaMarketManager.fetchLatestRelease(f)
+            val base = SchemaSources.frostLatest(
+                probe.version ?: SchemaSources.FROST_FALLBACK_TAG,
+            )
+            SchemaMarketFileOps.sourceWithReleaseProbe(base, probe.version, probe.checked)
+        }
+        f.schemaId == "wanxiang-lmdg" -> {
+            val probe = SchemaMarketManager.fetchReleaseAssetFingerprint(f)
+            SchemaMarketFileOps.sourceWithAssetProbe(f, probe.fingerprint, probe.checked, probe.version)
+        }
+        f.isGitSource -> {
+            // git 源码源：探测分支 HEAD commit（日期给人看、完整 SHA 给更新判定）
+            val probe = SchemaMarketManager.fetchGitHead(f)
+            SchemaMarketFileOps.sourceWithGitHead(f, probe.version, probe.date, probe.checked)
+        }
+        else -> f
+    }
+
+    /** 对给定源的所有下载链接做连通性探测；完成后原位更新该源，不改变列表顺序、不覆盖其它源。 */
     fun probeMirrors(source: SchemaSource) {
         _probing.value = _probing.value.orEmpty() + (source.schemaId to true)
         viewModelScope.launch {
             val probed = SchemaMarketManager.probeLinks(source)
             _probing.value = _probing.value.orEmpty() + (source.schemaId to false)
-            val others = _sources.value.orEmpty().filter { it.schemaId != probed.schemaId }
-            _sources.value = others + probed
+            val current = _sources.value.orEmpty()
+            _sources.value = current.map { if (it.schemaId == probed.schemaId) probed else it }
         }
     }
 

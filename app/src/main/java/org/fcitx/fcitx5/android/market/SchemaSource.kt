@@ -107,6 +107,8 @@ data class SchemaSource(
     val requireVersionFile: Boolean = false,
     /** 上游文件指纹（GitHub SHA-256 digest 或资产更新时间标记），LTS 用于检测同 tag 内容变化。 */
     val assetFingerprint: String? = null,
+    /** 该源是否正在后台探测最新版本（兜底渲染时标记，检测中不展示假版本、不做更新判定）。 */
+    val checking: Boolean = false,
     /** 最新版本/资产检查未成功；当前 version 仅供显示，不能作为更新判定依据。 */
     val versionCheckFailed: Boolean = false,
 ) {

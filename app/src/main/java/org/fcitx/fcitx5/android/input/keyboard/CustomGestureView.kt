@@ -6,17 +6,13 @@ package org.fcitx.fcitx5.android.input.keyboard
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.widget.FrameLayout
-import androidx.lifecycle.findViewTreeLifecycleOwner
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import org.fcitx.fcitx5.android.data.InputFeedbacks
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 
@@ -45,9 +41,13 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
         }
     }
 
-    private val lifecycleScope by lazy {
-        findViewTreeLifecycleOwner()?.lifecycleScope!!
-    }
+    /**
+     * 长按/连发的延时用 Handler 实现（视图自身机制），
+     * 不依赖 findViewTreeLifecycleOwner() —— 在 RecyclerView 条目首次 attach 的竞态窗口下，
+     * 外部 lifecycleOwner 可能尚未就绪（旧实现 `!!` 会抛 NPE/协程不执行），
+     * 导致「打开剪切板直接长按点不动、滑动一下才恢复」「候选展开区点不动」。
+     */
+    private val handler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var touchMovedOutside = false
@@ -55,7 +55,8 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
     @Volatile
     private var longPressTriggered = false
     var longPressEnabled = false
-    private var longPressJob: Job? = null
+    private var longPressRunnable: Runnable? = null
+    private var longPressRunAt = 0L
 
     @Volatile
     var longPressFeedbackEnabled = true
@@ -63,7 +64,7 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
     @Volatile
     private var repeatStarted = false
     var repeatEnabled = false
-    private var repeatJob: Job? = null
+    private var repeatRunnable: Runnable? = null
 
     var swipeEnabled = false
     var swipeRepeatEnabled = false
@@ -115,13 +116,14 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
         touchMovedOutside = false
         if (longPressEnabled) {
             longPressTriggered = false
-            longPressJob?.cancel()
-            longPressJob = null
+            handler.removeCallbacksAndMessages(null)
+            longPressRunnable = null
+            longPressRunAt = 0L
         }
         if (repeatEnabled) {
             repeatStarted = false
-            repeatJob?.cancel()
-            repeatJob = null
+            handler.removeCallbacksAndMessages(null)
+            repeatRunnable = null
         }
         if (swipeEnabled) {
             if (swipeRepeatEnabled) {
@@ -138,12 +140,30 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
 
     fun cancelGestures() {
         isPressed = false
+        handler.removeCallbacksAndMessages(null)
+        longPressRunnable = null
+        longPressRunAt = 0L
+        repeatRunnable = null
+        longPressTriggered = false
+        repeatStarted = false
         resetState()
         // reset double tap state on cancel
         if (doubleTapEnabled) {
             maybeDoubleTap = false
             lastClickTime = 0
         }
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        // 视图从窗口移除时清理所有挂起的延时，避免条目回收后仍触发长按/连发
+        handler.removeCallbacksAndMessages(null)
+        longPressRunnable = null
+        longPressRunAt = 0L
+        repeatRunnable = null
+        longPressTriggered = false
+        repeatStarted = false
+        touchMovedOutside = false
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -159,28 +179,32 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
                 InputFeedbacks.soundEffect(soundEffect)
                 dispatchGestureEvent(GestureType.Down, x, y)
                 if (longPressEnabled) {
-                    longPressJob?.cancel()
-                    longPressJob = lifecycleScope.launch {
-                        delay(longPressDelay.toLong())
+                    handler.removeCallbacksAndMessages(null)
+                    longPressTriggered = false
+                    longPressRunAt = SystemClock.uptimeMillis()
+                    val lpRunnable = Runnable {
+                        longPressRunnable = null
                         if (longPressFeedbackEnabled) {
                             InputFeedbacks.hapticFeedback(this@CustomGestureView, true)
                         }
                         longPressTriggered = performLongClick()
                     }
+                    longPressRunnable = lpRunnable
+                    handler.postDelayed(lpRunnable, longPressDelay.toLong())
                 }
                 if (repeatEnabled) {
-                    repeatJob?.cancel()
-                    repeatJob = lifecycleScope.launch {
-                        delay(longPressDelay.toLong())
-                        repeatStarted = true
-                        var lastTriggerTime: Long
-                        while (isActive && isEnabled) {
-                            lastTriggerTime = SystemClock.uptimeMillis()
+                    handler.removeCallbacksAndMessages(null)
+                    repeatStarted = false
+                    val rpRunnable = object : Runnable {
+                        override fun run() {
+                            repeatStarted = true
+                            if (!isEnabled) return
                             onRepeatListener?.invoke(this@CustomGestureView)
-                            val t = lastTriggerTime + RepeatInterval - SystemClock.uptimeMillis()
-                            if (t > 0) delay(t)
+                            handler.postDelayed(this, RepeatInterval)
                         }
                     }
+                    repeatRunnable = rpRunnable
+                    handler.postDelayed(rpRunnable, longPressDelay.toLong())
                 }
                 if (swipeEnabled) {
                     swipeLastX = x
@@ -219,13 +243,11 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
                 drawableHotspotChanged(x, y)
                 if (!touchMovedOutside && !pointInView(x, y)) {
                     touchMovedOutside = true
-                    if (longPressEnabled) {
-                        longPressJob?.cancel()
-                        longPressJob = null
-                    }
-                    if (repeatEnabled) {
-                        repeatJob?.cancel()
-                        repeatJob = null
+                    if (longPressEnabled || repeatEnabled) {
+                        handler.removeCallbacksAndMessages(null)
+                        longPressRunnable = null
+                        longPressRunAt = 0L
+                        repeatRunnable = null
                     }
                     if (repeatStarted || !swipeEnabled) {
                         isPressed = false
@@ -281,13 +303,11 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
             if (swipeRepeatEnabled && !swipeRepeatTriggered) {
                 swipeRepeatTriggered = true
             }
-            if (longPressEnabled && !longPressTriggered) {
-                longPressJob?.cancel()
-                longPressJob = null
-            }
-            if (repeatEnabled && !repeatStarted) {
-                repeatJob?.cancel()
-                repeatJob = null
+            if ((longPressEnabled && !longPressTriggered) || (repeatEnabled && !repeatStarted)) {
+                handler.removeCallbacksAndMessages(null)
+                longPressRunnable = null
+                longPressRunAt = 0L
+                repeatRunnable = null
             }
         }
         when (axis) {

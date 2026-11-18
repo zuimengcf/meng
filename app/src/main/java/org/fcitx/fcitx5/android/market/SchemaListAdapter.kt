@@ -76,25 +76,24 @@ class SchemaListAdapter(
             name.text = source.displayName
 
             val installed = installedVersions[source.schemaId]
-            val hasUpdate = installed != null && SchemaMarketManager.hasUpdate(source)
-            // 展示版本：优先锚定的具体版本（LTS 资产日期 / git 短 SHA），避免出现 "vLTS"、"git·main" 这类无信息标签
+            val hasUpdate = installed != null && !source.checking && SchemaMarketManager.hasUpdate(source)
+            // 展示版本：检测中不显示未探测的兜底值（避免把 git·main / 假 tag 当真实版本）；
+            // 否则优先锚定的具体版本（LTS 资产日期 / git 短 SHA）
             val shownVersion = source.displayVersion ?: source.version
             val statusLine = when {
+                source.checking -> ctx.getString(R.string.schema_checking_version)
                 source.versionCheckFailed -> ctx.getString(R.string.schema_version_check_failed)
                 installed == null -> if (source.displayVersion != null && source.assetFingerprint != null) {
                     // LTS 类源：未安装时直接展示锚定版本
                     ctx.getString(R.string.schema_latest_version, shownVersion)
                 } else ctx.getString(R.string.schema_not_installed)
-                hasUpdate -> ctx.getString(
-                    R.string.schema_update_available,
-                    shownVersion
-                )
+                hasUpdate -> ctx.getString(R.string.schema_update_available, shownVersion)
                 else -> ""
             }
             var descText = ctx.getString(
                 R.string.schema_market_desc,
                 source.schemaId,
-                shownVersion,
+                if (source.checking) "·" else shownVersion,
             )
             if (installed != null) {
                 descText += ctx.getString(R.string.schema_installed, installed)
