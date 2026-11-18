@@ -255,9 +255,15 @@ class ClipboardManageActivity : AppCompatActivity() {
     private fun roomDetail(): String = when (roomMode()) {
         "host" -> roomAddress() + if (ClipboardSyncServer.localAddress == "127.0.0.1")
             "\n未检测到局域网地址，请连接 Wi-Fi 后重新创建。" else "\n在线设备自动同步；修改端口或密码需先关闭房间。"
-        "client" -> roomAddress() + (ClipboardSyncClient.lastSyncError?.let {
-            "\n同步提示：${it.take(160)}\n请检查同一网络、房间密码及两端版本。"
-        } ?: "\n文字、图片和分组会自动同步，断线后自动重连。")
+        "client" -> roomAddress() + run {
+            val error = ClipboardSyncClient.lastSyncError
+            val notice = ClipboardSyncClient.lastSyncNotice
+            when {
+                error != null -> "\n同步提示：${error.take(160)}\n请检查同一网络、房间密码及两端版本。"
+                notice != null -> "\n同步提示：${notice.take(160)}"
+                else -> "\n文字、图片和分组会自动同步，断线后自动重连。"
+            }
+        }
         else -> "同一局域网内创建或加入房间，自动同步文字、图片和分组。"
     }
 

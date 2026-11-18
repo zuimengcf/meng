@@ -50,6 +50,8 @@ object ClipboardSyncClient {
     @Volatile private var hostCapabilities: Set<String> = emptySet()
     @Volatile var lastSyncError: String? = null
     @Volatile var lastSyncSummary: ClipboardSyncStats? = null
+    /** 非阻塞的次要提示（如图片待补）：不表示同步失败，不触发重试，仅在 UI 展示。 */
+    @Volatile var lastSyncNotice: String? = null
     @Volatile var onlineDeviceIds: Set<String> = emptySet()
     val connectedDeviceCount: Int get() = (onlineDeviceIds - ClipboardOplog.deviceId).size
     val joinedRoom: String get() = currentRoom
@@ -70,7 +72,7 @@ object ClipboardSyncClient {
             generation++
             currentRoom = normalized; currentPassword = pwd; lastPingOk = 0L
             peerInventory = null; hostCapabilities = emptySet()
-            lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
+            lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncNotice = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
             job?.cancel(); val myGeneration = generation
             job = scope.launch { loop(myGeneration, normalized, pwd) }
         }
@@ -80,19 +82,24 @@ object ClipboardSyncClient {
         synchronized(this) {
             generation++; currentRoom = ""; currentPassword = ""; lastPingOk = 0L
             peerInventory = null; hostCapabilities = emptySet()
-            lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
+            lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncNotice = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
             job?.cancel(); job = null
         }
     }
 
     private suspend fun loop(myGeneration: Long, room: String, pwd: String) {
         var backoff = 1_000L; var wasConnected = false
+        // 心跳探活失败的抖动容忍：一次偶发失败（网络抖动/时钟边界/主机瞬时忙）不应立即
+        // 翻转 UI 状态（表现为「抽搐」——提示闪现又消失）。连续失败达阈值才算真掉线。
+        var hbFailures = 0
+        val HB_FAIL_THRESHOLD = 3
         while (isCurrent(myGeneration, room)) {
             try {
                 val localFingerprint = ClipboardSnapshotStore.fingerprint()
                 val response = requestAt(room, pwd, ClipboardSyncWireRequest("heartbeat", ClipboardOplog.deviceId, localFingerprint,
                     capabilities = ClipboardSyncCapabilities.LOCAL))
                 if (!isCurrent(myGeneration, room)) return
+                hbFailures = 0
                 hostCapabilities = ClipboardSyncCapabilities.negotiated(response.capabilities)
                 // 主机「立即同步」请求：忽略指纹变化判定，强制立刻执行一次内容同步。
                 val kicked = ClipboardSyncCapabilities.KICK_V1 in response.capabilities
@@ -104,7 +111,7 @@ object ClipboardSyncClient {
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
                         lastSyncError = e.message ?: "内容同步失败"
-                        Timber.w("clipboard content merge incomplete (%s)", e.javaClass.simpleName)
+                        Timber.w(e, "clipboard content merge incomplete")
                         delay(5_000L)
                     }
                 } else {
@@ -115,9 +122,12 @@ object ClipboardSyncClient {
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
-                lastPingOk = 0L; onlineDeviceIds = emptySet(); lastSyncError = e.message ?: "同步连接失败"
-                Timber.w("clipboard sync heartbeat failed (%s)", e.javaClass.simpleName)
-                if (wasConnected) onDisconnected?.invoke(); wasConnected = false
+                hbFailures++
+                Timber.w(e, "clipboard sync heartbeat failed (%d/%d)", hbFailures, HB_FAIL_THRESHOLD)
+                if (hbFailures >= HB_FAIL_THRESHOLD) {
+                    lastPingOk = 0L; onlineDeviceIds = emptySet(); lastSyncError = e.message ?: "同步连接失败"
+                    if (wasConnected) onDisconnected?.invoke(); wasConnected = false
+                }
                 delay(backoff); backoff = (backoff * 2).coerceAtMost(15_000L); continue
             }
             ClipboardSyncSignal.awaitChangeOrHeartbeat(HEARTBEAT_MS)
@@ -209,10 +219,16 @@ object ClipboardSyncClient {
             lastPingOk = System.currentTimeMillis()
             lastUploadedLocalFingerprint = ClipboardSnapshotStore.fingerprint()
             lastSeenServerFingerprint = lastStatus
+            // 文字/分组/版本向量已全部一致：缺图只是「等源设备上线补传」的待办状态，
+            // 不是失败。若按 error 抛会让 loop() 把它当同步失败反复重试（报错→清空→再报错
+            // 的抽搐循环）。降级为次要提示，本次同步正常结束。
             val waiting = ClipboardEngineSync.waitingBlobs()
-            if (waiting.isNotEmpty()) error("文字及分组已同步，但 ${waiting.size} 张图片尚未拿到原图；源设备在线后会自动补齐")
             val missing = ClipboardSnapshotStore.missingImageIds()
-            if (missing.isNotEmpty()) error("文字及分组已同步，但 ${missing.size} 张图片源缺失；请从有原图的设备补传")
+            lastSyncNotice = when {
+                waiting.isNotEmpty() -> "文字及分组已同步，${waiting.size} 张图片尚未拿到原图；源设备在线后会自动补齐"
+                missing.isNotEmpty() -> "文字及分组已同步，${missing.size} 张图片源缺失；请从有原图的设备补传"
+                else -> null
+            }
             lastSyncError = null
             onProgress?.invoke("完成（接收 $pulled 条，发送 $pushed 条，落地 $applied 条）", pushed, pulled, applied)
             return applied
@@ -295,9 +311,10 @@ object ClipboardSyncClient {
         val missing = ClipboardSnapshotStore.missingImageIds()
         // The received merge is durable; an unavailable original is not fixed by resending identical bytes.
         // Track transport progress but retain an explicit incomplete-content error until a source changes.
+        // 缺图是待办状态不是失败：降级为 notice，避免 loop() 把它当失败反复重试造成抽搐。
+        lastSyncNotice = if (missing.isNotEmpty()) "文字及分组已合并，${missing.size} 张图片源缺失，尚未完成全部同步；请从有原图的设备补传" else null
         lastUploadedLocalFingerprint = uploadFingerprint
         lastSeenServerFingerprint = body.statusHash
-        if (missing.isNotEmpty()) error("文字及分组已合并，但 ${missing.size} 张图片源缺失，尚未完成全部同步；请从有原图的设备补传")
         lastPingOk = System.currentTimeMillis(); onlineDeviceIds = body.onlineClientIds.toSet(); lastSyncError = null
         onProgress?.invoke("完成（新增 ${stats.added}，已有匹配 ${stats.mergedExisting}，更新 ${stats.updated}，删除 ${stats.deleted}，现有 ${stats.totalAfter}）", packet.entries.size, incoming.entries.size, applied)
         applied
@@ -427,6 +444,10 @@ object ClipboardSyncClient {
         val conn = (uri.toURL().openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = CONNECT_TIMEOUT_MS; readTimeout = READ_TIMEOUT_MS; doOutput = true
             instanceFollowRedirects = false
+            // 服务端响应带 Connection: close；显式禁用客户端连接复用，避免复用
+            // 已被服务端声明关闭、但关闭竞态未完成的连接读到错位字节流
+            // （表现为 GCM 校验失败：完整 JSON 信封 + AEADBadTag）。
+            setRequestProperty("Connection", "close")
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("X-Clipboard-Sync-Request", id)
             setRequestProperty("X-Clipboard-Sync-Issued-At", envelope.issuedAt.toString())
