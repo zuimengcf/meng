@@ -45,6 +45,10 @@ object ClipboardSyncServer {
     private const val BODY_TIMEOUT_MS = 180_000
     private val online = ConcurrentHashMap<String, Long>()
     private val requestIds = ConcurrentHashMap<String, Long>()
+    /** 主机 UI 请求的下一次强制同步标记：每个在线客户端下次心跳时回带并清除。 */
+    private val kickPending = ConcurrentHashMap.newKeySet<String>()
+    /** 主机 UI：请求所有在线客户端立刻执行一次完整同步。 */
+    fun requestKickAll() { online.keys.forEach { kickPending.add(it) } }
     private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
     private val offeredDeliveries = ConcurrentHashMap<String, OfferedDelivery>()
     /** blob/1：每个客户端只能拉取主机最近一次发给它的快照里出现过的图片。 */
@@ -108,7 +112,7 @@ object ClipboardSyncServer {
         running.set(false); acceptJob?.cancel(); acceptJob = null
         runCatching { socket?.close() }; socket = null; serverPort = 0; password = ""
         activeSockets.forEach { runCatching { it.close() } }; activeSockets.clear()
-        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear(); offeredDeliveries.clear(); offeredBlobs.clear(); engineOffers.clear()
+        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear(); offeredDeliveries.clear(); offeredBlobs.clear(); engineOffers.clear(); kickPending.clear()
     }
 
     private suspend fun handle(client: Socket, onClientSynced: (Int) -> Unit) {
@@ -190,9 +194,18 @@ object ClipboardSyncServer {
             if (!mcpAuthorized || !McpServer.enabled) return ClipboardSyncWireResponse(false, requestId, "mcp", error = "MCP 未配置独立令牌或服务未启用")
             return ClipboardSyncWireResponse(true, requestId, "mcp", packetJson = McpServer.handle(req.packetJson ?: ""))
         }
-        if (req.kind == "heartbeat") return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
-            // Only answer capabilities to a client that announced some: an old client's response stays byte-identical.
-            capabilities = if (req.capabilities.isEmpty()) emptyList() else ClipboardSyncCapabilities.negotiated(req.capabilities).toList())
+        if (req.kind == "heartbeat") {
+            val kicked = req.clientId.let { id -> id != ClipboardOplog.deviceId && kickPending.remove(id) }
+            val caps: List<String> = if (req.capabilities.isEmpty()) emptyList()
+                else {
+                    val negotiated = ClipboardSyncCapabilities.negotiated(req.capabilities).toMutableSet()
+                    if (kicked) negotiated += ClipboardSyncCapabilities.KICK_V1
+                    negotiated.toList()
+                }
+            return ClipboardSyncWireResponse(true, requestId, "heartbeat", ClipboardSnapshotStore.fingerprint(), onlineClientIds = onlineClientIds.toList() + ClipboardOplog.deviceId,
+                // Only answer capabilities to a client that announced some: an old client's response stays byte-identical.
+                capabilities = caps)
+        }
         if (req.kind == "blob_get") {
             require(!mcpAuthorized) { "MCP token cannot read clipboard images" }
             val sha = req.blobHash

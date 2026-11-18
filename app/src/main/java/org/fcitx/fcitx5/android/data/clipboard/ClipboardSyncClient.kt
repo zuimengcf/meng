@@ -94,10 +94,12 @@ object ClipboardSyncClient {
                     capabilities = ClipboardSyncCapabilities.LOCAL))
                 if (!isCurrent(myGeneration, room)) return
                 hostCapabilities = ClipboardSyncCapabilities.negotiated(response.capabilities)
+                // 主机「立即同步」请求：忽略指纹变化判定，强制立刻执行一次内容同步。
+                val kicked = ClipboardSyncCapabilities.KICK_V1 in response.capabilities
                 lastPingOk = System.currentTimeMillis(); backoff = 1_000L
                 wasConnected = true
                 onlineDeviceIds = response.onlineClientIds.toSet()
-                if (ClipboardSyncRules.requiresExchange(localFingerprint, lastUploadedLocalFingerprint, response.statusHash, lastSeenServerFingerprint)) {
+                if (kicked || ClipboardSyncRules.requiresExchange(localFingerprint, lastUploadedLocalFingerprint, response.statusHash, lastSeenServerFingerprint)) {
                     try { syncOnce(room, pwd) }
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) {

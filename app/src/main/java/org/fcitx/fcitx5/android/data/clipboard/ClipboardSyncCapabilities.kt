@@ -20,6 +20,12 @@ object ClipboardSyncCapabilities {
      */
     const val ENGINE_V1 = "engine/1"
 
+    /**
+     * 主机侧「立即同步」请求：主机 UI 触发后，在线客户端下次心跳会看到这个回带标志，
+     * 并立刻执行一次完整内容同步。不参与 negotiated 交集，客户端直接检查原始列表。
+     */
+    const val KICK_V1 = "kick/1"
+
     val LOCAL: List<String> = listOf(BLOB_V1, ENGINE_V1)
 
     fun negotiated(peer: Collection<String>?): Set<String> =

@@ -294,6 +294,11 @@ class ClipboardManageActivity : AppCompatActivity() {
         }
         when (roomMode()) {
             "host" -> {
+                action(if (ClipboardSyncServer.onlineClientCount == 0) "立即同步（无在线设备）" else "立即同步") {
+                    ClipboardSyncServer.requestKickAll()
+                    toast(if (ClipboardSyncServer.onlineClientCount == 0) "当前没有在线客户端，对方在线时请再点一次"
+                        else "已请求 ${ClipboardSyncServer.onlineClientCount} 台设备立即同步，约 1 秒内开始")
+                }
                 action("复制房间地址") { setSyncClipboard(roomAddress()); toast("已复制房间地址，密码请单独告知对方") }
                 action("关闭本机房间") { confirmLeaveRoom(true) }
             }
