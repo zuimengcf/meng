@@ -105,11 +105,14 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
         }
     }
 
+    var boundsSlop = 0f
+
     private fun pointInView(x: Float, y: Float): Boolean {
-        return -touchSlop <= x &&
-                -touchSlop <= y &&
-                x < (width + touchSlop) &&
-                y < (height + touchSlop)
+        val slop = touchSlop + boundsSlop
+        return -slop <= x &&
+                -slop <= y &&
+                x < (width + slop) &&
+                y < (height + slop)
     }
 
     private fun resetState() {

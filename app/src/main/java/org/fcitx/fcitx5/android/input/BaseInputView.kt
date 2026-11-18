@@ -103,7 +103,10 @@ abstract class BaseInputView(
                     }
                 }
                 setOnDismissListener {
-                    candidateActionMenu = null
+                    // 身份校验：快速连续长按两个候选时，旧菜单的 dismiss 回调可能晚到，
+                    // 若不加校验会把新菜单的引用清空，使其成为无人管理的孤儿悬浮窗，
+                    // 一直占据 IME 窗口触摸，表现为候选区/剪切板整体点不动、只能返回键恢复。
+                    if (it === candidateActionMenu) candidateActionMenu = null
                 }
                 show()
             }

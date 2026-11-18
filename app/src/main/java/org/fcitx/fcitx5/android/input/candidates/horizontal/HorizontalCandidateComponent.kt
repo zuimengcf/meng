@@ -197,6 +197,10 @@ class HorizontalCandidateComponent :
     override fun onStartInput(info: EditorInfo, capFlags: CapabilityFlags) {
         // 新输入会话不能重放上一个编辑器的候选。
         lastNativeCandidates = FcitxEvent.CandidateListEvent.Data(total = 0)
+        // 计算器覆盖态跨输入会话残留时，点击候选会进计算器分支并被无声吞掉
+        // （calculator.result() 可能为 null，此时什么也不做），表现为「候选区点击失灵」。
+        // 新输入会话开始时强制退出覆盖态。
+        if (calculatorShowing) hideCalculatorCandidate()
     }
 
     override fun onCandidateUpdate(data: FcitxEvent.CandidateListEvent.Data) {

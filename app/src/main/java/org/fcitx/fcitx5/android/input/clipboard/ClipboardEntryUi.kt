@@ -74,6 +74,9 @@ class ClipboardEntryUi(override val ctx: Context, private val theme: Theme, radi
     override val root = CustomGestureView(ctx).apply {
         isClickable = true
         minimumHeight = dp(30)
+        // 条目较矮，长按期间手指轻微漂移容易滑出 view 边界导致长按被静默取消（表现为「长按偶尔没反应」）。
+        // 额外放宽边界判定（touchSlop 之外再叠加），移动出界取消长按仍保留，只是容忍度变大。
+        boundsSlop = dp(16f)
         foreground = RippleDrawable(
             ColorStateList.valueOf(theme.keyPressHighlightColor), null,
             GradientDrawable().apply {
