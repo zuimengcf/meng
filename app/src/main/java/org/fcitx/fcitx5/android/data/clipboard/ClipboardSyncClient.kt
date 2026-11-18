@@ -93,6 +93,14 @@ object ClipboardSyncClient {
         // 翻转 UI 状态（表现为「抽搐」——提示闪现又消失）。连续失败达阈值才算真掉线。
         var hbFailures = 0
         val HB_FAIL_THRESHOLD = 3
+        // 自动交换防抖：一次自动同步结束后，短时间内即使指纹仍判不等也不重复发起
+        // （防「成功后仍反复重试」：成功交换过的内容在冷却窗口内不会变出新差异；
+        // 若真有新变更，本地 ClipboardSyncSignal 或主机 kick 会立即唤醒，不受冷却影响）。
+        var lastExchangeAt = 0L
+        val EXCHANGE_COOLDOWN_MS = 10_000L
+        // 内容同步失败的退避：连续失败逐次拉长间隔（5s→10s→20s→40s，上限 60s），
+        // 成功后归零。避免「同步实际能成功/已成功，却在高频报错+重试」的骚扰。
+        var syncFailures = 0
         while (isCurrent(myGeneration, room)) {
             try {
                 val localFingerprint = ClipboardSnapshotStore.fingerprint()
@@ -106,19 +114,31 @@ object ClipboardSyncClient {
                 lastPingOk = System.currentTimeMillis(); backoff = 1_000L
                 wasConnected = true
                 onlineDeviceIds = response.onlineClientIds.toSet()
-                if (kicked || ClipboardSyncRules.requiresExchange(localFingerprint, lastUploadedLocalFingerprint, response.statusHash, lastSeenServerFingerprint)) {
-                    try { syncOnce(room, pwd) }
+                val needExchange = ClipboardSyncRules.requiresExchange(localFingerprint, lastUploadedLocalFingerprint, response.statusHash, lastSeenServerFingerprint)
+                val now = System.currentTimeMillis()
+                if (kicked || (needExchange && now - lastExchangeAt >= EXCHANGE_COOLDOWN_MS)) {
+                    lastExchangeAt = now
+                    try { syncOnce(room, pwd); syncFailures = 0 }
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
+                        syncFailures++
                         lastSyncError = e.message ?: "内容同步失败"
-                        Timber.w(e, "clipboard content merge incomplete")
-                        delay(5_000L)
+                        Timber.w(e, "clipboard content merge incomplete (consecutive=%d)", syncFailures)
+                        delay((5_000L shl (syncFailures - 1).coerceAtMost(4)).coerceAtMost(60_000L))
                     }
+                    // 交换完成（成功或失败都已尝试过）：无论结果如何，这次尝试都不再
+                    // 让下一拍心跳立即重发起。成功时 syncOnce 内部已推进指纹/清错误。
                 } else {
-                    // 心跳正常、指纹一致且没有待处理交换：说明之前的传输错误（如一次性的
-                    // AEADBadTag 截断/抖动）已经不再阻塞，但 lastSyncError 仍残留着旧文案，
-                    // 导致「同步成功了提示还在」。链路健康时清除残留错误。
-                    lastSyncError = null
+                    if (needExchange && !kicked) {
+                        // 冷却窗口内的指纹差异判定：不发起交换，也不算错误。
+                        Timber.d("clipboard exchange suppressed by cooldown (fingerprint delta pending)")
+                    }
+                    if (syncFailures == 0) {
+                        // 心跳正常、指纹一致且没有待处理交换：说明之前的传输错误（如一次性的
+                        // AEADBadTag 截断/抖动）已经不再阻塞，但 lastSyncError 仍残留着旧文案，
+                        // 导致「同步成功了提示还在」。链路健康时清除残留错误。
+                        lastSyncError = null
+                    }
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
