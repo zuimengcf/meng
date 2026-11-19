@@ -62,7 +62,7 @@ object ClipboardSyncServer {
         if (!running.get()) return
         purge()
         // 只通知仍在线的客户端：按 clientAddrs 键 ∩ online 取交集，防止单播到已离线 IP。
-        val addrs = clientAddrs.filterKeys { it in online }.values.toSet()
+        val addrs = clientAddrs.filterKeys { online.containsKey(it) }.values.toSet()
         ClipboardSyncDiscovery.notifyPeers(serverPort, addrs)
     }
     private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
