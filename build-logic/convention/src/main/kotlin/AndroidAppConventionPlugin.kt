@@ -41,8 +41,10 @@ class AndroidAppConventionPlugin : AndroidBaseConventionPlugin() {
             }
             buildTypes {
                 release {
-                    isMinifyEnabled = true
-                    isShrinkResources = true
+                    // 本地编译默认跳过 R8（minify 极耗时间与内存）；需要正式压缩时
+                    // 显式传 -Pmeng.withR8 开启（CI/发版用）。
+                    isMinifyEnabled = target.providers.gradleProperty("meng.withR8").orNull == "true"
+                    isShrinkResources = target.providers.gradleProperty("meng.withR8").orNull == "true"
                     signingConfig = signingConfigs.fromProjectEnv(target)
                     proguardFile(getDefaultProguardFile("proguard-android-optimize.txt"))
                 }
