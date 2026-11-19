@@ -142,6 +142,12 @@ object ClipboardSyncDiscovery {
     /** 主机向局域网广播「内容有变化」通知（NOTIFY 包）的去抖：批量变更合并为一次广播。 */
     private val lastNotifyAt = AtomicLong(0L)
     private const val NOTIFY_DEBOUNCE_MS = 500L
+    /** 单线程发送器：NOTIFY 可能从主线程（Room 写入事务 / UI 点击）触发，
+     * 直接把 DatagramSocket.send 丢到后台，避免 NetworkOnMainThreadException 吞掉整个通知。
+     * 去抖在调用线程完成（AtomicLong CAS），只有真正发出的那次才提交发送，不会堆积。 */
+    private val notifySender = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "clb-notify-sender").apply { isDaemon = true }
+    }
 
     /**
      * 主机向局域网广播「内容有变化」通知（NOTIFY 包）。
@@ -149,6 +155,7 @@ object ClipboardSyncDiscovery {
      * 不携带任何剪贴板内容或密码，只是「有变化，请来拉取」的提示。
      * [unicastAddrs]：主机已知的在线客户端 IP——组播/广播之外逐个单播兜底，
      * 路由器隔离组播或广播被 AP 抑制时，单播依然可达（客户端必在活动连接上）。
+     * 注意：本函数可被任意线程调用（含主线程），实际 UDP 发送在后台单线程执行。
      */
     fun notifyPeers(roomPort: Int, unicastAddrs: Collection<String> = emptyList()) {
         if (roomPort <= 0) return
@@ -157,18 +164,21 @@ object ClipboardSyncDiscovery {
         if (now - last < NOTIFY_DEBOUNCE_MS) return
         if (!lastNotifyAt.compareAndSet(last, now)) return
         val data = "$MAGIC:NOTIFY:$roomPort".toByteArray(Charsets.UTF_8)
-        runCatching {
-            DatagramSocket().use { sock ->
-                sock.send(DatagramPacket(data, data.size,
-                    InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
-                val bcast = broadcastAddress()
-                if (bcast != null) sock.send(DatagramPacket(data, data.size,
-                    InetSocketAddress(bcast, DISCOVERY_PORT)))
-                unicastAddrs.filter { it.isNotBlank() }.forEach { ip ->
-                    runCatching { sock.send(DatagramPacket(data, data.size, InetSocketAddress(ip, DISCOVERY_PORT))) }
+        val addrs = unicastAddrs.filter { it.isNotBlank() }.toList()
+        notifySender.execute {
+            runCatching {
+                DatagramSocket().use { sock ->
+                    sock.send(DatagramPacket(data, data.size,
+                        InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
+                    val bcast = broadcastAddress()
+                    if (bcast != null) sock.send(DatagramPacket(data, data.size,
+                        InetSocketAddress(bcast, DISCOVERY_PORT)))
+                    addrs.forEach { ip ->
+                        runCatching { sock.send(DatagramPacket(data, data.size, InetSocketAddress(ip, DISCOVERY_PORT))) }
+                    }
                 }
-            }
-        }.onFailure { Timber.w(it, "clb discovery notify broadcast") }
+            }.onFailure { Timber.w(it, "clb discovery notify broadcast") }
+        }
     }
 
     /**

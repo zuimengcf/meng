@@ -27,6 +27,11 @@ data class ClipboardFullTransferPreview(
     val remoteDeviceId: String,
 )
 
+/** 传输层瞬时抖动（响应密文校验失败/截断等）：单次出现不视为同步失败，
+ * 不写入 lastSyncError 刷屏；只有连续多次（见 [ClipboardSyncClient.TRANSIENT_ERROR_THRESHOLD]）
+ * 才升级为错误展示，下一次成功自动清除。 */
+class TransientTransportException(message: String) : IllegalStateException(message)
+
 /** 加密协议 v2 客户端；心跳不携带快照，摘要改变才交换真实快照。 */
 object ClipboardSyncClient {
     private val json = Json { ignoreUnknownKeys = true }
@@ -38,6 +43,8 @@ object ClipboardSyncClient {
     private const val MAX_BODY = 128 * 1024 * 1024
     private const val ENGINE_PAGE = 200
     private const val MAX_PAGES = 100_000
+    /** 瞬时传输抖动连续超过此值才升级为错误展示（单次 AEADBadTag/截断只记日志）。 */
+    private const val TRANSIENT_ERROR_THRESHOLD = 3
     @Volatile private var currentRoom = ""
     @Volatile private var currentPassword = ""
     @Volatile private var lastPingOk = 0L
@@ -105,17 +112,32 @@ object ClipboardSyncClient {
         // 无动静按 1 小时托底。失败后指数退避（30s 起），不无限叠加报错。
         var consecutiveFailures = 0
         var backoffMs = 30_000L
+        // 瞬时传输抖动（单次 AEADBadTag/截断）不刷屏：只记日志，连续多次才升级展示。
+        var transientCount = 0
         while (isCurrent(myGeneration, room)) {
             Timber.i("clb sync cycle start: room=%s", room)
             try {
                 syncOnce(room, pwd)
                 consecutiveFailures = 0
                 backoffMs = 30_000L
+                transientCount = 0
                 lastSyncError = null
                 Timber.i("clb sync cycle ok: room=%s", room)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
                 consecutiveFailures++
+                if (e is TransientTransportException && consecutiveFailures < TRANSIENT_ERROR_THRESHOLD) {
+                    // 瞬时抖动：数据本身没坏，只是某次响应密文被截断/损坏（常见于大图片传输）。
+                    // 本次不展示错误、不加次数地继续退避重试；连续多次仍失败才升级为真实错误。
+                    transientCount++
+                    lastSyncError = null
+                    Timber.w(e, "clipboard sync transient (host=%s, transient=%d/%d)",
+                        room, transientCount, TRANSIENT_ERROR_THRESHOLD)
+                    ClipboardSyncSignal.awaitChangeOrHeartbeat(backoffMs)
+                    backoffMs = (backoffMs * 2).coerceAtMost(5 * 60_000L)
+                    continue
+                }
+                transientCount = 0
                 lastSyncError = "主机 $room · ${e.message ?: "同步失败"} · 连续 ${consecutiveFailures} 次 · ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}"
                 Timber.w(e, "clipboard sync failed (host=%s, consecutive=%d)", room, consecutiveFailures)
                 // 失败退避期间用短托底周期等唤醒：唤醒（本地变更/NOTIFY）到来可立即重试；
@@ -477,7 +499,7 @@ object ClipboardSyncClient {
             val result = try {
                 json.decodeFromString<ClipboardSyncWireResponse>(ClipboardSyncCrypto.decrypt(password, wire, ClipboardSyncCrypto.RESPONSE_DIRECTION))
             } catch (e: javax.crypto.AEADBadTagException) {
-                throw IllegalStateException("同步数据在传输中被截断或损坏（响应密文校验失败，常见于图片等大内容未完整接收），请重试")
+                throw TransientTransportException("同步数据在传输中被截断或损坏（响应密文校验失败，常见于图片等大内容未完整接收），请重试")
             }
             if (result.requestId != id) throw SecurityException("响应请求号不匹配")
             if (result.kind != req.kind) throw SecurityException("响应操作类型不匹配")

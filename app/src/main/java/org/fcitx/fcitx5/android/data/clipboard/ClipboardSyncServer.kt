@@ -139,6 +139,10 @@ object ClipboardSyncServer {
     private suspend fun handle(client: Socket, onClientSynced: (Int) -> Unit) {
         client.use { s ->
             var reservedBytes = 0L
+            // 请求阶段信息：异常可能在解析出 req 之前抛出（headers/信封校验），
+            // 用可变变量在解析成功后填充，便于 catch 里给出精确定位。
+            var reqKind = "?"
+            var reqClient = "?"
             // SO_TIMEOUT does not bound writes: also close clients that stop reading a response.
             // Keep the guard generous: large image-backed snapshots can legitimately take minutes
             // to upload/download on Wi-Fi, and killing the socket mid-write truncates the GCM
@@ -187,6 +191,7 @@ object ClipboardSyncServer {
                 val controlAuthorized = grant == ClipboardRequestAuth.Grant.CONTROL
                 val credential = if (controlAuthorized) checkNotNull(controlToken) else password
                 val req = json.decodeFromString<ClipboardSyncWireRequest>(ClipboardSyncCrypto.decrypt(credential, env, ClipboardSyncCrypto.REQUEST_DIRECTION))
+                reqKind = req.kind; reqClient = req.clientId
                 if (req.clientId.isBlank() || req.clientId != env.clientId) throw SecurityException("client binding failed")
                 if (controlAuthorized && req.kind != "mcp") throw SecurityException("MCP token cannot authorize sync")
                 if (!controlAuthorized) {
@@ -201,11 +206,20 @@ object ClipboardSyncServer {
                 val outEnv = ClipboardSyncCrypto.encrypt(credential, env.requestId, env.clientId, json.encodeToString(result), ClipboardSyncCrypto.RESPONSE_DIRECTION)
                 writeResponse(s, 200, json.encodeToString(outEnv).toByteArray())
             } catch (e: SerializationException) {
-                Timber.w("legacy or malformed clipboard request rejected (%s)", e.javaClass.simpleName)
+                Timber.w(e, "clipboard request rejected (malformed, kind=%s client=%s)", reqKind, reqClient)
                 runCatching { writeResponse(s, 426, "旧版明文请求已拒绝，请使用协议 v2 加密信封".toByteArray()) }
             } catch (e: Exception) {
-                Timber.w("clipboard request rejected (%s)", e.javaClass.simpleName)
-                runCatching { writeResponse(s, if (e is SecurityException) 403 else 400, "同步请求被拒绝，请检查密码、协议版本、存储空间与数据完整性".toByteArray()) }
+                Timber.w(e, "clipboard request rejected (kind=%s client=%s code=%s)", reqKind, reqClient,
+                    if (e is SecurityException) "403" else "400")
+                val reason = when {
+                    e is SecurityException && e.message == "plaintext credential header disabled" -> "明文凭据头已禁用，请使用加密协议"
+                    e is SecurityException && e.message == "replay" -> "请求重放或过期，请重试"
+                    e is SecurityException && e.message == "invalid authenticated envelope" -> "加密信封校验失败，请检查两端版本与密码"
+                    e is SecurityException && e.message == "client binding failed" -> "客户端标识绑定失败，请重试"
+                    e is SecurityException && e.message == "MCP token cannot authorize sync" -> "MCP 令牌不能用于同步操作"
+                    else -> "同步请求被拒绝，请检查密码、协议版本、存储空间与数据完整性"
+                }
+                runCatching { writeResponse(s, if (e is SecurityException) 403 else 400, reason.toByteArray()) }
             } finally {
                 lifetime.cancel()
                 if (reservedBytes > 0) bodyBudget.release(reservedBytes)
