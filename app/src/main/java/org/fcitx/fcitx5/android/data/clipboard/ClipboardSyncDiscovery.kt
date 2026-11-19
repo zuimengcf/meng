@@ -13,6 +13,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
@@ -35,6 +36,12 @@ object ClipboardSyncDiscovery {
     private var hostSocket: DatagramSocket? = null
     @Volatile private var _serverPort = 0
     @Volatile private var _roomName = "梦-同步"
+
+    /** 客户端「变化通知」监听：收到与本机目标端口匹配的 NOTIFY 即回调（触发同步）。 */
+    @Volatile private var targetPort = 0
+    @Volatile private var notifyCallback: (() -> Unit)? = null
+    private val watcherRunning = AtomicBoolean(false)
+    private var watcherSocket: DatagramSocket? = null
 
     val serverPort: Int get() = _serverPort
 
@@ -130,6 +137,90 @@ object ClipboardSyncDiscovery {
         running.set(false)
         runCatching { hostSocket?.close() }
         hostSocket = null
+    }
+
+    /** 主机向局域网广播「内容有变化」通知（NOTIFY 包）的去抖：批量变更合并为一次广播。 */
+    private val lastNotifyAt = AtomicLong(0L)
+    private const val NOTIFY_DEBOUNCE_MS = 500L
+
+    /**
+     * 主机向局域网广播「内容有变化」通知（NOTIFY 包）。
+     * 客户端若正监听同一个房间端口，收到后会立即唤醒一次同步；
+     * 不携带任何剪贴板内容或密码，只是「有变化，请来拉取」的提示。
+     */
+    fun notifyPeers(roomPort: Int) {
+        if (roomPort <= 0) return
+        val now = System.currentTimeMillis()
+        val last = lastNotifyAt.get()
+        if (now - last < NOTIFY_DEBOUNCE_MS) return
+        if (!lastNotifyAt.compareAndSet(last, now)) return
+        runCatching {
+            val data = "$MAGIC:NOTIFY:$roomPort".toByteArray(Charsets.UTF_8)
+            DatagramSocket().use { sock ->
+                sock.send(DatagramPacket(data, data.size,
+                    InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
+                val bcast = broadcastAddress()
+                if (bcast != null) sock.send(DatagramPacket(data, data.size,
+                    InetSocketAddress(bcast, DISCOVERY_PORT)))
+            }
+        }.onFailure { Timber.w(it, "clb discovery notify broadcast") }
+    }
+
+    /**
+     * 客户端监听指定房间端口的 NOTIFY 通知。
+     * 收到匹配的 NOTIFY 包即回调 [onNotify]（调用方应触发一次同步），
+     * 回调在监听线程执行，调用方自行切到合适的 dispatcher。
+     * 返回后即可 [stopWatch] 停止。
+     */
+    fun startWatch(roomPort: Int, onNotify: () -> Unit) {
+        if (roomPort <= 0) return
+        synchronized(this) {
+            if (watcherRunning.getAndSet(true)) return
+            targetPort = roomPort
+            notifyCallback = onNotify
+        }
+        thread(name = "clb-discovery-watch") {
+            var sock: DatagramSocket? = null
+            try {
+                // 与主机 discovery 线程同模式：绑定 DISCOVERY_PORT + reuseAddress。
+                // NOTIFY 同时走组播和网段广播；广播不依赖 joinGroup，绑定 18524
+                // 就能收到。同一设备 host/client 互斥（加入房间会先检查），无端口冲突。
+                sock = DatagramSocket(DISCOVERY_PORT).apply { reuseAddress = true }
+                watcherSocket = sock
+                sock.soTimeout = 600
+                while (watcherRunning.get()) {
+                    runCatching {
+                        val buf = ByteArray(512)
+                        val recv = DatagramPacket(buf, buf.size)
+                        sock!!.receive(recv)
+                        val data = String(recv.data, recv.offset, recv.length, Charsets.UTF_8)
+                        if (data.startsWith("$MAGIC:NOTIFY:")) {
+                            val notifyPort = data.removePrefix("$MAGIC:NOTIFY:").trim().toIntOrNull()
+                            if (notifyPort != null && notifyPort == targetPort) {
+                                notifyCallback?.invoke()
+                            }
+                        }
+                    }.onFailure { /* timeout 等忽略 */ }
+                }
+            } catch (t: Throwable) {
+                Timber.w(t, "clb discovery watcher error")
+            } finally {
+                runCatching { sock?.close() }
+                watcherSocket = null
+                synchronized(this) {
+                    watcherRunning.set(false)
+                    notifyCallback = null
+                    targetPort = 0
+                }
+            }
+        }
+    }
+
+    /** 停止客户端 NOTIFY 监听。 */
+    fun stopWatch() {
+        watcherRunning.set(false)
+        runCatching { watcherSocket?.close() }
+        watcherSocket = null
     }
 
     private fun announceBytes(): ByteArray =

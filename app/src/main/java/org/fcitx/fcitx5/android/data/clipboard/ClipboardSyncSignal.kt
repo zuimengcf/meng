@@ -15,7 +15,14 @@ object ClipboardSyncSignal {
     /** Mark the collection dirty without waking the client (e.g. Room invalidation). */
     fun invalidate() { counter.incrementAndGet() }
 
-    fun changed() { counter.incrementAndGet(); changes.trySend(Unit) }
+    fun changed() {
+        counter.incrementAndGet(); changes.trySend(Unit)
+        // 本机是主机时：任何 durable 变更（含合并对端推送）都广播 NOTIFY，
+        // 让在线客户端立即来拉取，而不是等 1 小时托底。去抖在 notifyPeers 内。
+        if (ClipboardSyncServer.isRunning) {
+            ClipboardSyncDiscovery.notifyPeers(ClipboardSyncServer.port)
+        }
+    }
     suspend fun awaitChangeOrHeartbeat(timeoutMs: Long) {
         withTimeoutOrNull(timeoutMs) { changes.receive() }
     }

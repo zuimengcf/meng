@@ -76,6 +76,14 @@ object ClipboardSyncClient {
             job?.cancel(); val myGeneration = generation
             job = scope.launch { loop(myGeneration, normalized, pwd) }
         }
+        // 监听主机 NOTIFY（内容有变化）：收到即唤醒同步循环立即对齐。
+        // room 端口从地址解析；失败则该类触发退化为 1 小时托底，不影响主链路。
+        val roomPort = runCatching { URI(normalized).port }.getOrNull() ?: 0
+        if (roomPort > 0) {
+            ClipboardSyncDiscovery.startWatch(roomPort) {
+                ClipboardSyncSignal.changed()
+            }
+        }
     }
 
     fun leaveRoom() {
@@ -85,24 +93,28 @@ object ClipboardSyncClient {
             lastUploadedLocalFingerprint = ""; lastSeenServerFingerprint = ""; lastSyncError = null; lastSyncNotice = null; lastSyncSummary = null; onlineDeviceIds = emptySet()
             job?.cancel(); job = null
         }
+        ClipboardSyncDiscovery.stopWatch()
     }
 
     private suspend fun loop(myGeneration: Long, room: String, pwd: String) {
         // 托底重复机制：不做高频心跳探活（探活既无意义又曾诱发抽搐报错）。
-        // 本地有内容变更（同步）或申请对端差异时经 ClipboardSyncSignal 立即唤醒；
+        // 本地内容变更（clipboard 写入）、主机 NOTIFY（对端有变化）或
+        // 手动「立即同步」都会唤醒这里；首拍立即同步一次（加入即对齐）。
         // 平时无动静则按周期（1 小时）托底同步一次。
-        // 同步请求本身直接返回成功/失败，失败记在 lastSyncError，不弹重复错误、不反复重试。
+        // 同步请求本身直接返回成功/失败，失败记在 lastSyncError（带次数/时间），不反复重试。
+        var consecutiveFailures = 0
         while (isCurrent(myGeneration, room)) {
-            ClipboardSyncSignal.awaitChangeOrHeartbeat(HEARTBEAT_MS)
-            if (!isCurrent(myGeneration, room)) return
             try {
                 syncOnce(room, pwd)
+                consecutiveFailures = 0
                 lastSyncError = null
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
-                lastSyncError = e.message ?: "同步失败"
-                Timber.w(e, "clipboard sync failed")
+                consecutiveFailures++
+                lastSyncError = "${e.message ?: "同步失败"}（连续 ${consecutiveFailures} 次，${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}）"
+                Timber.w(e, "clipboard sync failed (consecutive=%d)", consecutiveFailures)
             }
+            ClipboardSyncSignal.awaitChangeOrHeartbeat(HEARTBEAT_MS)
         }
     }
 

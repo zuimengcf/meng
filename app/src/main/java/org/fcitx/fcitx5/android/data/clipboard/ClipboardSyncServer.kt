@@ -48,7 +48,12 @@ object ClipboardSyncServer {
     /** 主机 UI 请求的下一次强制同步标记：每个在线客户端下次心跳时回带并清除。 */
     private val kickPending = ConcurrentHashMap.newKeySet<String>()
     /** 主机 UI：请求所有在线客户端立刻执行一次完整同步。 */
-    fun requestKickAll() { online.keys.forEach { kickPending.add(it) } }
+    fun requestKickAll() {
+        online.keys.forEach { kickPending.add(it) }
+        // kick 标记要等客户端下次主动请求才会被回带消费——删掉高频心跳后这等于失效。
+        // 直接广播 NOTIFY 唤醒在线客户端（它们收到后立刻同步，顺带消费 kickPending）。
+        ClipboardSyncDiscovery.notifyPeers(serverPort)
+    }
     private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
     private val offeredDeliveries = ConcurrentHashMap<String, OfferedDelivery>()
     /** blob/1：每个客户端只能拉取主机最近一次发给它的快照里出现过的图片。 */
