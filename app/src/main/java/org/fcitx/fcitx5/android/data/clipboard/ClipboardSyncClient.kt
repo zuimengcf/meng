@@ -80,9 +80,13 @@ object ClipboardSyncClient {
         // room 端口从地址解析；失败则该类触发退化为 1 小时托底，不影响主链路。
         val roomPort = runCatching { URI(normalized).port }.getOrNull() ?: 0
         if (roomPort > 0) {
+            Timber.i("clb sync watch start: room=%s port=%d", normalized, roomPort)
             ClipboardSyncDiscovery.startWatch(roomPort) {
+                Timber.i("clb sync wake by NOTIFY: room=%s", normalized)
                 ClipboardSyncSignal.changed()
             }
+        } else {
+            Timber.w("clb sync watch NOT started: cannot parse port from %s", normalized)
         }
     }
 
@@ -97,22 +101,28 @@ object ClipboardSyncClient {
     }
 
     private suspend fun loop(myGeneration: Long, room: String, pwd: String) {
-        // 托底重复机制：不做高频心跳探活（探活既无意义又曾诱发抽搐报错）。
-        // 本地内容变更（clipboard 写入）、主机 NOTIFY（对端有变化）或
-        // 手动「立即同步」都会唤醒这里；首拍立即同步一次（加入即对齐）。
-        // 平时无动静则按周期（1 小时）托底同步一次。
-        // 同步请求本身直接返回成功/失败，失败记在 lastSyncError（带次数/时间），不反复重试。
+        // 托底重复机制：不做高频心跳探活。本地变更 / 主机 NOTIFY 唤醒即时同步；
+        // 无动静按 1 小时托底。失败后指数退避（30s 起），不无限叠加报错。
         var consecutiveFailures = 0
+        var backoffMs = 30_000L
         while (isCurrent(myGeneration, room)) {
+            Timber.i("clb sync cycle start: room=%s", room)
             try {
                 syncOnce(room, pwd)
                 consecutiveFailures = 0
+                backoffMs = 30_000L
                 lastSyncError = null
+                Timber.i("clb sync cycle ok: room=%s", room)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
                 consecutiveFailures++
-                lastSyncError = "${e.message ?: "同步失败"}（连续 ${consecutiveFailures} 次，${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}）"
-                Timber.w(e, "clipboard sync failed (consecutive=%d)", consecutiveFailures)
+                lastSyncError = "主机 $room · ${e.message ?: "同步失败"} · 连续 ${consecutiveFailures} 次 · ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())}"
+                Timber.w(e, "clipboard sync failed (host=%s, consecutive=%d)", room, consecutiveFailures)
+                // 失败退避期间用短托底周期等唤醒：唤醒（本地变更/NOTIFY）到来可立即重试；
+                // 否则退避结束后自动重试一次，避免「静默一小时不重连」。
+                ClipboardSyncSignal.awaitChangeOrHeartbeat(backoffMs)
+                backoffMs = (backoffMs * 2).coerceAtMost(5 * 60_000L)
+                continue
             }
             ClipboardSyncSignal.awaitChangeOrHeartbeat(HEARTBEAT_MS)
         }

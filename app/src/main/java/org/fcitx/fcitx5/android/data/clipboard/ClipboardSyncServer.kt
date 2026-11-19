@@ -44,6 +44,8 @@ object ClipboardSyncServer {
     // timeout and the 300s connection lifetime so a slow upload is never cut mid-envelope.
     private const val BODY_TIMEOUT_MS = 180_000
     private val online = ConcurrentHashMap<String, Long>()
+    /** 在线客户端最近一次连接的来源 IP（NOTIFY 单播兜底用，组播/广播不可达时直接打到客户端）。 */
+    private val clientAddrs = ConcurrentHashMap<String, String>()
     private val requestIds = ConcurrentHashMap<String, Long>()
     /** 主机 UI 请求的下一次强制同步标记：每个在线客户端下次心跳时回带并清除。 */
     private val kickPending = ConcurrentHashMap.newKeySet<String>()
@@ -51,8 +53,17 @@ object ClipboardSyncServer {
     fun requestKickAll() {
         online.keys.forEach { kickPending.add(it) }
         // kick 标记要等客户端下次主动请求才会被回带消费——删掉高频心跳后这等于失效。
-        // 直接广播 NOTIFY 唤醒在线客户端（它们收到后立刻同步，顺带消费 kickPending）。
-        ClipboardSyncDiscovery.notifyPeers(serverPort)
+        // 直接 NOTIFY 唤醒在线客户端（组播+广播+已知 IP 单播兜底），它们收到后立刻同步。
+        notifyOnlineClients()
+    }
+
+    /** 向所有在线客户端发 NOTIFY 唤醒（主机数据变化 / 手动 kick 共用）。 */
+    fun notifyOnlineClients() {
+        if (!running.get()) return
+        purge()
+        // 只通知仍在线的客户端：按 clientAddrs 键 ∩ online 取交集，防止单播到已离线 IP。
+        val addrs = clientAddrs.filterKeys { it in online }.values.toSet()
+        ClipboardSyncDiscovery.notifyPeers(serverPort, addrs)
     }
     private data class OfferedDelivery(val ids: Set<String>, val versions: Map<String, String>)
     private val offeredDeliveries = ConcurrentHashMap<String, OfferedDelivery>()
@@ -80,7 +91,12 @@ object ClipboardSyncServer {
             ?: candidates.firstOrNull())?.second?.hostAddress ?: "127.0.0.1"
     }
     val passwordHint get() = password
-    private fun purge() { val now = System.currentTimeMillis(); online.entries.removeIf { now - it.value > TTL }; requestIds.entries.removeIf { now - it.value > 2 * ClipboardSyncCrypto.CLOCK_SKEW_MS + 60_000L } }
+    private fun purge() {
+        val now = System.currentTimeMillis()
+        online.entries.removeIf { now - it.value > TTL }
+        clientAddrs.keys.retainAll(online.keys)
+        requestIds.entries.removeIf { now - it.value > 2 * ClipboardSyncCrypto.CLOCK_SKEW_MS + 60_000L }
+    }
     /** 仅统计远端客户端；主机自身通过 online response 的 host id 返回给客户端。 */
     val onlineClientIds: Set<String> get() { purge(); return online.keys.toSet() - ClipboardOplog.deviceId }
     val onlineClientCount: Int get() = onlineClientIds.size
@@ -117,7 +133,7 @@ object ClipboardSyncServer {
         running.set(false); acceptJob?.cancel(); acceptJob = null
         runCatching { socket?.close() }; socket = null; serverPort = 0; password = ""
         activeSockets.forEach { runCatching { it.close() } }; activeSockets.clear()
-        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); requestIds.clear(); offeredDeliveries.clear(); offeredBlobs.clear(); engineOffers.clear(); kickPending.clear()
+        ClipboardSyncDiscovery.stopDiscovery(); online.clear(); clientAddrs.clear(); requestIds.clear(); offeredDeliveries.clear(); offeredBlobs.clear(); engineOffers.clear(); kickPending.clear()
     }
 
     private suspend fun handle(client: Socket, onClientSynced: (Int) -> Unit) {
@@ -173,7 +189,10 @@ object ClipboardSyncServer {
                 val req = json.decodeFromString<ClipboardSyncWireRequest>(ClipboardSyncCrypto.decrypt(credential, env, ClipboardSyncCrypto.REQUEST_DIRECTION))
                 if (req.clientId.isBlank() || req.clientId != env.clientId) throw SecurityException("client binding failed")
                 if (controlAuthorized && req.kind != "mcp") throw SecurityException("MCP token cannot authorize sync")
-                if (!controlAuthorized) online[req.clientId] = System.currentTimeMillis()
+                if (!controlAuthorized) {
+                    online[req.clientId] = System.currentTimeMillis()
+                    clientAddrs[req.clientId] = client.inetAddress.hostAddress ?: ""
+                }
                 purge()
                 // Heartbeats only read the (cached) fingerprint and online list: never queue them
                 // behind a long merge, or every client times out and reports a disconnect.

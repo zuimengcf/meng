@@ -147,21 +147,26 @@ object ClipboardSyncDiscovery {
      * 主机向局域网广播「内容有变化」通知（NOTIFY 包）。
      * 客户端若正监听同一个房间端口，收到后会立即唤醒一次同步；
      * 不携带任何剪贴板内容或密码，只是「有变化，请来拉取」的提示。
+     * [unicastAddrs]：主机已知的在线客户端 IP——组播/广播之外逐个单播兜底，
+     * 路由器隔离组播或广播被 AP 抑制时，单播依然可达（客户端必在活动连接上）。
      */
-    fun notifyPeers(roomPort: Int) {
+    fun notifyPeers(roomPort: Int, unicastAddrs: Collection<String> = emptyList()) {
         if (roomPort <= 0) return
         val now = System.currentTimeMillis()
         val last = lastNotifyAt.get()
         if (now - last < NOTIFY_DEBOUNCE_MS) return
         if (!lastNotifyAt.compareAndSet(last, now)) return
+        val data = "$MAGIC:NOTIFY:$roomPort".toByteArray(Charsets.UTF_8)
         runCatching {
-            val data = "$MAGIC:NOTIFY:$roomPort".toByteArray(Charsets.UTF_8)
             DatagramSocket().use { sock ->
                 sock.send(DatagramPacket(data, data.size,
                     InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
                 val bcast = broadcastAddress()
                 if (bcast != null) sock.send(DatagramPacket(data, data.size,
                     InetSocketAddress(bcast, DISCOVERY_PORT)))
+                unicastAddrs.filter { it.isNotBlank() }.forEach { ip ->
+                    runCatching { sock.send(DatagramPacket(data, data.size, InetSocketAddress(ip, DISCOVERY_PORT))) }
+                }
             }
         }.onFailure { Timber.w(it, "clb discovery notify broadcast") }
     }
@@ -187,6 +192,7 @@ object ClipboardSyncDiscovery {
                 // 就能收到。同一设备 host/client 互斥（加入房间会先检查），无端口冲突。
                 sock = DatagramSocket(DISCOVERY_PORT).apply { reuseAddress = true }
                 watcherSocket = sock
+                Timber.i("clb watcher bound: port=%d target=%d", sock.localPort, targetPort)
                 sock.soTimeout = 600
                 while (watcherRunning.get()) {
                     runCatching {

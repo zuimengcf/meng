@@ -17,10 +17,10 @@ object ClipboardSyncSignal {
 
     fun changed() {
         counter.incrementAndGet(); changes.trySend(Unit)
-        // 本机是主机时：任何 durable 变更（含合并对端推送）都广播 NOTIFY，
-        // 让在线客户端立即来拉取，而不是等 1 小时托底。去抖在 notifyPeers 内。
+        // 本机是主机时：任何 durable 变更（含合并对端推送）都 NOTIFY 在线客户端
+        // 立即来拉取，而不是等 1 小时托底。组播+广播+已知 IP 单播三路兜底。
         if (ClipboardSyncServer.isRunning) {
-            ClipboardSyncDiscovery.notifyPeers(ClipboardSyncServer.port)
+            ClipboardSyncServer.notifyOnlineClients()
         }
     }
     suspend fun awaitChangeOrHeartbeat(timeoutMs: Long) {
