@@ -23,7 +23,10 @@ data class ClipboardSyncEnvelope(
     val salt: String,
     val nonce: String,
     val ciphertext: String,
-    val issuedAt: Long = System.currentTimeMillis(),
+    /** 默认值必须是常量：原来写成 System.currentTimeMillis()，kotlinx 在 encodeDefaults=false 时
+     * 会拿「编码那一刻的时间」和字段比较，恰好同一毫秒就把 issuedAt 省略，接收方再用自己的当前时间补上，
+     * AAD 对不上 → 偶发 AEADBadTag /「加密信封校验失败」。0 = 对端未带此字段。 */
+    val issuedAt: Long = MISSING_ISSUED_AT,
     val direction: String = "request",
 )
 
@@ -49,8 +52,16 @@ data class ClipboardSyncWireRequest(
     val ops: List<ClipboardEngineWireOp> = emptyList(),
     /** engine/1：每页最多拉多少条操作。 */
     val limit: Int = 0,
-    /** engine/1：kind = blob_put 的图片字节（base64）。 */
+    /** engine/1：kind = blob_put 的图片字节（base64）。blob/2 时只是一个分块。 */
     val blobData: String? = null,
+    /** blob/2：分块在整张图片里的字节偏移（blob_get / blob_put）。 */
+    val blobOffset: Long = 0L,
+    /** blob/2：blob_put 时整张图片的总字节数；blob_get 时为 0。 */
+    val blobTotal: Long = 0L,
+    /** lexicon/1：快照文件相对 sync 目录的路径（<installation_id>/<dict>.userdb.txt）。 */
+    val lexiconPath: String? = null,
+    /** lexicon/1：本机 Rime installation_id（lexicon_put 时声明自己是谁）。 */
+    val lexiconOwner: String? = null,
 )
 
 @Serializable
@@ -97,7 +108,19 @@ data class ClipboardSyncWireResponse(
     val hasMore: Boolean = false,
     /** engine/1：主机合并后仍缺的图片哈希，客户端用 blob_put 补传。 */
     val missingBlobs: List<String> = emptyList(),
+    /** blob/2：整张图片的总字节数（blob_get 分块响应）。 */
+    val blobTotal: Long = 0L,
+    /** lexicon/1：主机 sync 目录里的词库快照清单（lexicon_list）。 */
+    val lexiconFiles: List<LexiconFileInfo> = emptyList(),
+    /** lexicon/1：主机自己的 Rime installation_id。 */
+    val lexiconOwner: String? = null,
 )
+
+/** lexicon/1：一份 Rime 用户词库快照（sync/<owner>/<name>）。 */
+@Serializable
+data class LexiconFileInfo(val owner: String, val name: String, val size: Long, val sha256: String)
+
+const val MISSING_ISSUED_AT = 0L
 
 object ClipboardSyncCrypto {
     const val PROTOCOL_VERSION = 2

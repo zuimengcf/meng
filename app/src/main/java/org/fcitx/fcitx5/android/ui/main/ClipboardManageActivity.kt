@@ -48,6 +48,7 @@ import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncForegroundService
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncServer
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncSettings
 import org.fcitx.fcitx5.android.data.clipboard.ClipboardSyncNotifications
+import org.fcitx.fcitx5.android.data.clipboard.RimeLexiconSync
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.databinding.ActivityClipboardManageBinding
@@ -248,7 +249,7 @@ class ClipboardManageActivity : AppCompatActivity() {
     private fun roomStatus(): String = when (roomMode()) {
         "host" -> "本机房间已开启 · ${ClipboardSyncServer.onlineClientCount} 台设备在线"
         "client" -> if (ClipboardSyncClient.isConnected)
-            "已连接房间 · ${ClipboardSyncClient.connectedDeviceCount} 台其他设备在线" else "正在连接房间 · 自动重试中"
+            "已连接房间 · ${ClipboardSyncClient.connectedDeviceCount} 台其他设备在线" else "连接失败 · 主机不可达或已离线 · 自动重试中"
         else -> "未连接同步房间"
     }
 
@@ -320,6 +321,13 @@ class ClipboardManageActivity : AppCompatActivity() {
                 action("加入房间 · 连接其他设备") { promptJoinRoom() }
             }
         }
+        if (roomMode() == "host" || roomMode() == "client") {
+            val lexOn = RimeLexiconSync.enabled
+            action(if (lexOn) "用户词库同步：已开启 · ${lexiconStatus()}" else "用户词库同步：已关闭") { toggleLexiconSync() }
+            if (roomMode() == "client" && lexOn) action("立即同步词库") { doLexiconSync() }
+            // 本机设置：只约束本机作为客户端发起自动词库同步的频率，不参与主机协商；开关关闭时也可预先设置
+            action("词库自动同步间隔：${lexiconAutoIntervalLabel()}") { pickLexiconAutoInterval() }
+        }
         action("同步历史与恢复") { showSyncHistory() }
         action("最近同步结果") { showLatestSyncResult() }
         action("剪切板操作日志") { showOperationLog() }
@@ -345,6 +353,111 @@ class ClipboardManageActivity : AppCompatActivity() {
         roomDialogMode = roomMode()
         dialog.setOnDismissListener { if (roomDialog === dialog) { roomDialog = null; roomDialogStatus = null } }
         dialog.show()
+    }
+
+    private fun lexiconStatus(): String {
+        val err = RimeLexiconSync.lastError
+        val last = RimeLexiconSync.lastSyncAt
+        return when {
+            err != null -> "上次失败：${err.take(30)}"
+            last > 0 -> "上次 " + java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(last))
+            else -> "尚未同步"
+        }
+    }
+
+    private fun lexiconAutoIntervalLabel(): String {
+        val min = RimeLexiconSync.autoIntervalMin()
+        return if (min % 60 == 0) "${min / 60} 小时" else "$min 分钟"
+    }
+
+    /** 手动设置词库自动同步间隔：预设档位 + 自定义输入。 */
+    private fun pickLexiconAutoInterval() {
+        val options = listOf(5, 15, 30, 60, 120, 240, 720)
+        val current = RimeLexiconSync.autoIntervalMin()
+        val labels = options.map { min ->
+            val label = if (min % 60 == 0) "${min / 60} 小时" else "$min 分钟"
+            if (min == current) "$label（当前）" else label
+        } + "自定义…"
+        // 说明：部分 ROM（EMUI 等）AlertDialog 同时用 setMessage + setItems 时列表不渲染，
+        // 改为自定义 View：说明 TextView + ListView，保证档位列表可见可点。
+        val pad = (resources.displayMetrics.density * 16).toInt()
+        val box = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+        box.addView(android.widget.TextView(this).apply {
+            text = "两次自动词库同步的最小间隔（本机设置，不与主机协商）。" +
+                "词库检查跟随剪切板同步周期，实际频率不会高于剪切板同步频率。" +
+                "手动「立即同步词库」不受此限制。当前：${lexiconAutoIntervalLabel()}"
+            setPadding(pad, pad / 2, pad, pad / 2)
+        })
+        val list = android.widget.ListView(this)
+        list.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("词库自动同步间隔")
+            .setNegativeButton("取消", null)
+            .create()
+        list.setOnItemClickListener { _, _, which, _ ->
+            dialog.dismiss()
+            if (which < options.size) {
+                RimeLexiconSync.setAutoIntervalMin(options[which])
+                toast("已设为 ${lexiconAutoIntervalLabel()}")
+                roomDialog?.dismiss(); showSyncMenu()
+            } else {
+                promptCustomInterval()
+            }
+        }
+        dialog.setView(box.apply { addView(list) })
+        dialog.show()
+    }
+
+    private fun promptCustomInterval() {
+        val input = android.widget.EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "${RimeLexiconSync.MIN_AUTO_INTERVAL_MIN}-${RimeLexiconSync.MAX_AUTO_INTERVAL_MIN} 分钟"
+            setText(RimeLexiconSync.autoIntervalMin().toString())
+        }
+        AlertDialog.Builder(this).setTitle("自定义间隔（分钟）")
+            .setView(input)
+            .setPositiveButton("确定") { _, _ ->
+                val min = input.text.toString().toIntOrNull() ?: run { toast("请输入数字"); return@setPositiveButton }
+                if (min < RimeLexiconSync.MIN_AUTO_INTERVAL_MIN || min > RimeLexiconSync.MAX_AUTO_INTERVAL_MIN) {
+                    toast("范围 ${RimeLexiconSync.MIN_AUTO_INTERVAL_MIN}-${RimeLexiconSync.MAX_AUTO_INTERVAL_MIN} 分钟")
+                    return@setPositiveButton
+                }
+                RimeLexiconSync.setAutoIntervalMin(min)
+                toast("已设为 ${lexiconAutoIntervalLabel()}")
+                roomDialog?.dismiss(); showSyncMenu()
+            }
+            .setNegativeButton(android.R.string.cancel, null).show()
+    }
+
+    private fun toggleLexiconSync() {
+        if (RimeLexiconSync.enabled) {
+            RimeLexiconSync.enabled = false
+            toast("已关闭用户词库同步（已同步的词保留在本机）")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("开启用户词库同步？")
+            .setMessage("会在房间内交换 Rime 用户词库快照，由 Rime 自动合并词频，不会互相覆盖。主机和客户端都需要开启。" +
+                "合并只在键盘收起时进行。建议先在两台设备上点一次「立即同步词库」核对结果，再长期使用。")
+            .setPositiveButton("开启") { _, _ ->
+                RimeLexiconSync.enabled = true
+                RimeLexiconSync.resetAutoAttempt()
+                toast(if (roomMode() == "client") "已开启，可点「立即同步词库」" else "已开启，客户端下次同步时会交换词库")
+            }
+            .setNegativeButton(android.R.string.cancel, null).show()
+    }
+
+    private fun doLexiconSync() {
+        toast("正在同步词库…")
+        scope.launch {
+            val r = runCatching { withContext(Dispatchers.IO) { ClipboardSyncClient.lexiconSyncOnce() } }
+            r.onSuccess {
+                toast(when {
+                    it.downloaded == 0 && it.uploaded == 0 -> "词库已是最新"
+                    it.downloaded > 0 && !it.merged -> "已收到 ${it.downloaded} 份、上传 ${it.uploaded} 份，键盘收起后自动合并"
+                    else -> "词库同步完成：收到 ${it.downloaded} 份、上传 ${it.uploaded} 份"
+                })
+            }.onFailure { toast("词库同步失败：${it.message ?: it.javaClass.simpleName}") }
+        }
     }
 
     private fun summaryLine(label: String, summary: ClipboardSyncSnapshotSummary): String =

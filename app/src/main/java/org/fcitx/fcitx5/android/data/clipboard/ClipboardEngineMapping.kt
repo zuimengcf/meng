@@ -90,8 +90,22 @@ object ClipboardEngineMapping {
         op.units?.let { JsonObject(it) })
 
     fun fromWire(op: ClipboardEngineWireOp): SyncOp {
-        validate(op)
-        return SyncOp(op.origin, op.seq, op.collection, op.key, op.hlc, OpType.valueOf(op.type), op.create, op.units)
+        val safe = shortenOversized(op)
+        validate(safe)
+        return SyncOp(safe.origin, safe.seq, safe.collection, safe.key, safe.hlc, OpType.valueOf(safe.type), safe.create, safe.units)
+    }
+
+    /**
+     * 对端（旧版或在本修复前采集的）发来超长文本：确定性地换成带标注的开头一段再合并。
+     * 以前是整批拒收，版本向量不推进，这一条会永远卡住之后所有同步。
+     */
+    private fun shortenOversized(op: ClipboardEngineWireOp): ClipboardEngineWireOp {
+        if (op.collection != ENTRIES) return op
+        val o = op.units?.get(UNIT) as? JsonObject ?: return op
+        val text = (o["text"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return op
+        if (!ClipboardSizeLimits.isOversized(text)) return op
+        val fixed = JsonObject(o + ("text" to JsonPrimitive(ClipboardSizeLimits.shorten(text))))
+        return op.copy(units = JsonObject(mapOf(UNIT to fixed)))
     }
 }
 

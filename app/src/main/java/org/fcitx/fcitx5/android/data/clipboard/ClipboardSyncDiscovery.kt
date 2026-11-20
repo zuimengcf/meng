@@ -4,27 +4,35 @@
  */
 package org.fcitx.fcitx5.android.data.clipboard
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.SystemClock
+import org.fcitx.fcitx5.android.utils.appContext
 import timber.log.Timber
 import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.MulticastSocket
 import java.net.NetworkInterface
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
- * 局域网剪切板房间的**自动发现**（UDP 组播）。
+ * 局域网剪切板房间的**自动发现**与「内容有变化」通知（UDP 组播 + 网段广播 + 单播兜底）。
  *
- * - **主机**：房间开启后启动发现线程，进入多播组并周期性广播「房间公告」，
- *   同时响应对端的「查询」包（单播回 ip:port + 房间名）。
- * - **客户端**：[discover] 向多播地址发查询包，收集若干秒内主机回复，
- *   得到可用房间地址列表（如 "192.168.1.5:18523"），供加入房间自动填充。
+ * 线上格式与旧版完全相同（MAGIC:ANNOUNCE / QUERY / NOTIFY），新旧版本可以互相发现、互相唤醒。
  *
- * 只拿主机的 `ip:port`，不传剪贴板内容、不传密码；密码仍由用户输入、HTTP 层校验。
+ * 修复点：
+ * - 监听线程按「代」管理：旧线程退出时只清理自己那一代的状态，不会把刚启动的新 watcher 关掉；
+ * - 换房间/换端口时重启监听，而不是沿用旧端口；
+ * - 先 setReuseAddress 再 bind（原来构造即绑定，reuse 实际没生效）；
+ * - 真正 joinGroup，并持有 WifiManager.MulticastLock（很多机型熄屏后不持锁会过滤组播/广播）；
+ * - NOTIFY 去抖改为「前沿立即发 + 尾沿补发」，窗口内的后续变更不再被丢弃；
+ * - 广播地址/组播出口只取 Wi-Fi、热点、以太网接口上的 IPv4，避免走到蜂窝或 VPN。
  */
 object ClipboardSyncDiscovery {
 
@@ -32,257 +40,313 @@ object ClipboardSyncDiscovery {
     private const val MULTICAST_GROUP = "239.255.42.99"
     private const val MAGIC = "MENG-CLB-SYNC"
 
-    private val running = AtomicBoolean(false)
-    private var hostSocket: DatagramSocket? = null
+    // ---------------------------------------------------------------- 组播锁
+
+    private val lockLock = Any()
+    private var lockHolders = 0
+    private var multicastLock: WifiManager.MulticastLock? = null
+
+    private fun acquireMulticast() = synchronized(lockLock) {
+        lockHolders++
+        if (multicastLock == null) multicastLock = runCatching {
+            (appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
+                .createMulticastLock("meng-clipboard-sync").apply { setReferenceCounted(false); acquire() }
+        }.onFailure { Timber.w(it, "clb multicast lock unavailable") }.getOrNull()
+    }
+
+    private fun releaseMulticast() = synchronized(lockLock) {
+        lockHolders = (lockHolders - 1).coerceAtLeast(0)
+        if (lockHolders == 0) { runCatching { multicastLock?.release() }; multicastLock = null }
+    }
+
+    // ---------------------------------------------------------------- 网卡
+
+    private fun lanName(name: String) = name.startsWith("wlan") || name.startsWith("swlan") ||
+        name.startsWith("ap") || name.startsWith("eth") || name.startsWith("softap")
+
+    /** 局域网接口（Wi-Fi 优先，其次热点/以太网）及其 IPv4 地址。 */
+    private fun lanInterfaces(): List<Pair<NetworkInterface, Inet4Address>> = runCatching {
+        NetworkInterface.getNetworkInterfaces()!!.toList()
+            .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) && lanName(it.name) }
+            .sortedBy { if (it.name.startsWith("wlan")) 0 else 1 }
+            .mapNotNull { nic ->
+                nic.inetAddresses.toList().filterIsInstance<Inet4Address>()
+                    .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress }?.let { nic to it }
+            }
+    }.getOrDefault(emptyList())
+
+    /** 每个局域网接口的 IPv4 广播地址（取不到时按 /24 推导）。 */
+    private fun broadcastAddresses(): List<InetAddress> = lanInterfaces().mapNotNull { (nic, ip) ->
+        nic.interfaceAddresses.firstOrNull { it.address is Inet4Address && it.broadcast != null }?.broadcast
+            ?: runCatching { InetAddress.getByAddress(ip.address.copyOf().also { it[3] = 255.toByte() }) }.getOrNull()
+    }.distinct()
+
+    private fun activeWifiIpv4(): String = lanInterfaces().firstOrNull()?.second?.hostAddress ?: ""
+
+    private fun openSocket(bindPort: Int?): MulticastSocket {
+        val sock = MulticastSocket(null as java.net.SocketAddress?)
+        sock.reuseAddress = true
+        sock.bind(InetSocketAddress(bindPort ?: 0))
+        runCatching { sock.timeToLive = 1 }
+        runCatching { sock.loopbackMode = true } // true = 禁用回环：不收自己发的包
+        return sock
+    }
+
+    private fun joinGroup(sock: MulticastSocket) {
+        val group = InetSocketAddress(InetAddress.getByName(MULTICAST_GROUP), DISCOVERY_PORT)
+        val nics = lanInterfaces().map { it.first }
+        if (nics.isEmpty()) runCatching { sock.joinGroup(InetAddress.getByName(MULTICAST_GROUP)) }
+        nics.forEach { nic -> runCatching { sock.joinGroup(group, nic) }.onFailure { Timber.w(it, "clb joinGroup %s", nic.name) } }
+    }
+
+    /** 组播 + 每个网段广播 + 额外单播，逐个尽力发送；组播从每个局域网接口各发一份。 */
+    private fun sendAll(sock: MulticastSocket, data: ByteArray, unicast: Collection<String> = emptyList()) {
+        val group = InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)
+        val nics = lanInterfaces().map { it.first }
+        if (nics.isEmpty()) runCatching { sock.send(DatagramPacket(data, data.size, group)) }
+        nics.forEach { nic ->
+            runCatching { sock.networkInterface = nic; sock.send(DatagramPacket(data, data.size, group)) }
+        }
+        broadcastAddresses().forEach { b ->
+            runCatching { sock.broadcast = true; sock.send(DatagramPacket(data, data.size, InetSocketAddress(b, DISCOVERY_PORT))) }
+        }
+        unicast.filter { it.isNotBlank() }.forEach { ip ->
+            runCatching { sock.send(DatagramPacket(data, data.size, InetSocketAddress(ip, DISCOVERY_PORT))) }
+        }
+    }
+
+    // ---------------------------------------------------------------- 主机：公告 + 响应查询
+
+    private val hostGeneration = AtomicLong(0L)
+    @Volatile private var hostSocket: MulticastSocket? = null
     @Volatile private var _serverPort = 0
     @Volatile private var _roomName = "梦-同步"
-
-    /** 客户端「变化通知」监听：收到与本机目标端口匹配的 NOTIFY 即回调（触发同步）。 */
-    @Volatile private var targetPort = 0
-    @Volatile private var notifyCallback: (() -> Unit)? = null
-    private val watcherRunning = AtomicBoolean(false)
-    private var watcherSocket: DatagramSocket? = null
-
     val serverPort: Int get() = _serverPort
 
-    /** 主机：开启发现线程（广播 + 响应查询）。 */
     fun startDiscovery(roomPort: Int, roomName: String = "梦-同步") {
+        val myGen: Long
         synchronized(this) {
-            _serverPort = roomPort
-            _roomName = roomName
-            if (running.getAndSet(true)) return
+            _serverPort = roomPort; _roomName = roomName
+            if (hostSocket != null) return
+            myGen = hostGeneration.incrementAndGet()
         }
-        thread(name = "clb-discovery-host") {
-            var sock: DatagramSocket? = null
+        acquireMulticast()
+        thread(name = "clb-discovery-host", isDaemon = true) {
+            var sock: MulticastSocket? = null
             try {
-                sock = DatagramSocket(DISCOVERY_PORT).apply { reuseAddress = true }
-                hostSocket = sock
+                sock = openSocket(DISCOVERY_PORT)
+                synchronized(this) { if (hostGeneration.get() == myGen) hostSocket = sock else return@thread }
+                joinGroup(sock)
+                sock.soTimeout = 400
                 var lastBroadcast = 0L
-                while (running.get()) {
+                while (hostGeneration.get() == myGen) {
                     val now = SystemClock.elapsedRealtime()
                     if (now - lastBroadcast >= 3000) {
                         lastBroadcast = now
-                        runCatching {
-                            val data = announceBytes()
-                            sock!!.send(DatagramPacket(data, data.size,
-                                InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
-                            val bcast = broadcastAddress()
-                            if (bcast != null) sock!!.send(DatagramPacket(data, data.size,
-                                InetSocketAddress(bcast, DISCOVERY_PORT)))
-                        }.onFailure { Timber.w(it, "clb discovery broadcast") }
+                        runCatching { sendAll(sock, announceBytes()) }.onFailure { Timber.w(it, "clb discovery broadcast") }
                     }
-                    runCatching { sock!!.soTimeout = 400 } .onFailure { }
                     runCatching {
                         val buf = ByteArray(512)
                         val recv = DatagramPacket(buf, buf.size)
-                        sock!!.receive(recv)
+                        sock.receive(recv)
                         val data = String(recv.data, recv.offset, recv.length, Charsets.UTF_8)
                         if (data.startsWith("$MAGIC:QUERY")) {
                             val reply = announceBytes()
-                            sock!!.send(DatagramPacket(reply, reply.size, recv.address, recv.port))
+                            sock.send(DatagramPacket(reply, reply.size, recv.address, recv.port))
                         }
-                    }.onFailure { /* timeout 等忽略 */ }
+                    }
                 }
             } catch (t: Throwable) {
                 Timber.w(t, "clb discovery host error")
             } finally {
-                running.set(false)
                 runCatching { sock?.close() }
-                hostSocket = null
+                synchronized(this) { if (hostSocket === sock) hostSocket = null }
+                releaseMulticast()
             }
         }
     }
 
-    /** 客户端：主动扫描局域网内主机。最多收集 [timeoutMs] 毫秒。 */
+    fun stopDiscovery() {
+        synchronized(this) {
+            hostGeneration.incrementAndGet()
+            runCatching { hostSocket?.close() }
+            hostSocket = null
+        }
+    }
+
+    // ---------------------------------------------------------------- 客户端：扫描主机
+
     fun discover(timeoutMs: Int = 1500): List<String> {
         val found = LinkedHashSet<String>()
         val myIp = activeWifiIpv4()
-        thread(name = "clb-discovery-client") {
-            var sock: DatagramSocket? = null
-            try {
-                sock = DatagramSocket().apply { reuseAddress = true }
-                sock.soTimeout = timeoutMs
-                val query = "$MAGIC:QUERY".toByteArray(Charsets.UTF_8)
-                sock.send(DatagramPacket(query, query.size,
-                    InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
-                // 组播 + 网段广播各发一次，提升发现成功率
-                val bcast = broadcastAddress()
-                if (bcast != null) sock.send(DatagramPacket(query, query.size,
-                    InetSocketAddress(bcast, DISCOVERY_PORT)))
-
-                val end = System.currentTimeMillis() + timeoutMs
-                while (System.currentTimeMillis() < end) {
-                    runCatching {
-                        val buf = ByteArray(512)
-                        val recv = DatagramPacket(buf, buf.size)
-                        sock!!.receive(recv)
-                        val data = String(recv.data, recv.offset, recv.length, Charsets.UTF_8)
-                        val host = recv.address.hostAddress ?: return@runCatching
-                        if (host == myIp || host.startsWith("127.")) return@runCatching
-                        val port = announcePort(data) ?: return@runCatching
-                        found.add("$host:$port")
-                    }.onFailure { /* timeout 忽略 */ }
+        acquireMulticast()
+        try {
+            thread(name = "clb-discovery-client") {
+                var sock: MulticastSocket? = null
+                try {
+                    sock = openSocket(null)
+                    sock.soTimeout = timeoutMs
+                    sendAll(sock, "$MAGIC:QUERY".toByteArray(Charsets.UTF_8))
+                    val end = System.currentTimeMillis() + timeoutMs
+                    while (System.currentTimeMillis() < end) {
+                        runCatching {
+                            val buf = ByteArray(512)
+                            val recv = DatagramPacket(buf, buf.size)
+                            sock.receive(recv)
+                            val data = String(recv.data, recv.offset, recv.length, Charsets.UTF_8)
+                            val host = recv.address.hostAddress ?: return@runCatching
+                            if (host == myIp || host.startsWith("127.")) return@runCatching
+                            val port = announcePort(data) ?: return@runCatching
+                            found.add("$host:$port")
+                        }
+                    }
+                } catch (t: Throwable) {
+                    Timber.w(t, "clb discovery client error")
+                } finally {
+                    runCatching { sock?.close() }
                 }
-            } catch (t: Throwable) {
-                Timber.w(t, "clb discovery client error")
-            } finally {
-                runCatching { sock?.close() }
-            }
-        }.join()
+            }.join()
+        } finally { releaseMulticast() }
         return found.toList()
     }
 
-    /** 停止主机发现线程。 */
-    fun stopDiscovery() {
-        running.set(false)
-        runCatching { hostSocket?.close() }
-        hostSocket = null
-    }
+    // ---------------------------------------------------------------- 主机：NOTIFY（前沿 + 尾沿）
 
-    /** 主机向局域网广播「内容有变化」通知（NOTIFY 包）的去抖：批量变更合并为一次广播。 */
-    private val lastNotifyAt = AtomicLong(0L)
     private const val NOTIFY_DEBOUNCE_MS = 500L
-    /** 单线程发送器：NOTIFY 可能从主线程（Room 写入事务 / UI 点击）触发，
-     * 直接把 DatagramSocket.send 丢到后台，避免 NetworkOnMainThreadException 吞掉整个通知。
-     * 去抖在调用线程完成（AtomicLong CAS），只有真正发出的那次才提交发送，不会堆积。 */
-    private val notifySender = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+    private val notifySender = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "clb-notify-sender").apply { isDaemon = true }
     }
+    private val notifyState = Any()
+    private var lastNotifyAt = 0L
+    private var trailingScheduled = false
+    private var pendingPort = 0
+    private val pendingAddrs = LinkedHashSet<String>()
 
     /**
-     * 主机向局域网广播「内容有变化」通知（NOTIFY 包）。
-     * 客户端若正监听同一个房间端口，收到后会立即唤醒一次同步；
-     * 不携带任何剪贴板内容或密码，只是「有变化，请来拉取」的提示。
-     * [unicastAddrs]：主机已知的在线客户端 IP——组播/广播之外逐个单播兜底，
-     * 路由器隔离组播或广播被 AP 抑制时，单播依然可达（客户端必在活动连接上）。
-     * 注意：本函数可被任意线程调用（含主线程），实际 UDP 发送在后台单线程执行。
+     * 主机向局域网广播「内容有变化」通知（NOTIFY 包），不携带任何内容或密码。
+     * 去抖窗口内的第一次立即发送；窗口内后续的变更合并为窗口结束时的一次尾沿补发，
+     * 保证「最后一次变更之后」至少有一个 NOTIFY。可从任意线程（含主线程）调用。
      */
     fun notifyPeers(roomPort: Int, unicastAddrs: Collection<String> = emptyList()) {
         if (roomPort <= 0) return
-        val now = System.currentTimeMillis()
-        val last = lastNotifyAt.get()
-        if (now - last < NOTIFY_DEBOUNCE_MS) return
-        if (!lastNotifyAt.compareAndSet(last, now)) return
-        val data = "$MAGIC:NOTIFY:$roomPort".toByteArray(Charsets.UTF_8)
-        val addrs = unicastAddrs.filter { it.isNotBlank() }.toList()
-        notifySender.execute {
-            runCatching {
-                DatagramSocket().use { sock ->
-                    sock.send(DatagramPacket(data, data.size,
-                        InetSocketAddress(MULTICAST_GROUP, DISCOVERY_PORT)))
-                    val bcast = broadcastAddress()
-                    if (bcast != null) sock.send(DatagramPacket(data, data.size,
-                        InetSocketAddress(bcast, DISCOVERY_PORT)))
-                    addrs.forEach { ip ->
-                        runCatching { sock.send(DatagramPacket(data, data.size, InetSocketAddress(ip, DISCOVERY_PORT))) }
+        synchronized(notifyState) {
+            pendingPort = roomPort
+            pendingAddrs += unicastAddrs.filter { it.isNotBlank() }
+            val now = SystemClock.elapsedRealtime()
+            val wait = lastNotifyAt + NOTIFY_DEBOUNCE_MS - now
+            if (wait <= 0 && !trailingScheduled) {
+                lastNotifyAt = now
+                val (port, addrs) = drainPending()
+                notifySender.execute { sendNotify(port, addrs) }
+            } else if (!trailingScheduled) {
+                trailingScheduled = true
+                notifySender.schedule({
+                    val (port, addrs) = synchronized(notifyState) {
+                        trailingScheduled = false; lastNotifyAt = SystemClock.elapsedRealtime(); drainPending()
                     }
-                }
-            }.onFailure { Timber.w(it, "clb discovery notify broadcast") }
-        }
-    }
-
-    /**
-     * 客户端监听指定房间端口的 NOTIFY 通知。
-     * 收到匹配的 NOTIFY 包即回调 [onNotify]（调用方应触发一次同步），
-     * 回调在监听线程执行，调用方自行切到合适的 dispatcher。
-     * 返回后即可 [stopWatch] 停止。
-     */
-    fun startWatch(roomPort: Int, onNotify: () -> Unit) {
-        if (roomPort <= 0) return
-        synchronized(this) {
-            if (watcherRunning.getAndSet(true)) return
-            targetPort = roomPort
-            notifyCallback = onNotify
-        }
-        thread(name = "clb-discovery-watch") {
-            var sock: DatagramSocket? = null
-            try {
-                // 与主机 discovery 线程同模式：绑定 DISCOVERY_PORT + reuseAddress。
-                // NOTIFY 同时走组播和网段广播；广播不依赖 joinGroup，绑定 18524
-                // 就能收到。同一设备 host/client 互斥（加入房间会先检查），无端口冲突。
-                sock = DatagramSocket(DISCOVERY_PORT).apply { reuseAddress = true }
-                watcherSocket = sock
-                Timber.i("clb watcher bound: port=%d target=%d", sock.localPort, targetPort)
-                sock.soTimeout = 600
-                while (watcherRunning.get()) {
-                    runCatching {
-                        val buf = ByteArray(512)
-                        val recv = DatagramPacket(buf, buf.size)
-                        sock!!.receive(recv)
-                        val data = String(recv.data, recv.offset, recv.length, Charsets.UTF_8)
-                        if (data.startsWith("$MAGIC:NOTIFY:")) {
-                            val notifyPort = data.removePrefix("$MAGIC:NOTIFY:").trim().toIntOrNull()
-                            if (notifyPort != null && notifyPort == targetPort) {
-                                notifyCallback?.invoke()
-                            }
-                        }
-                    }.onFailure { /* timeout 等忽略 */ }
-                }
-            } catch (t: Throwable) {
-                Timber.w(t, "clb discovery watcher error")
-            } finally {
-                runCatching { sock?.close() }
-                watcherSocket = null
-                synchronized(this) {
-                    watcherRunning.set(false)
-                    notifyCallback = null
-                    targetPort = 0
-                }
+                    sendNotify(port, addrs)
+                }, wait.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
             }
         }
     }
 
-    /** 停止客户端 NOTIFY 监听。 */
+    private fun drainPending(): Pair<Int, List<String>> {
+        val addrs = pendingAddrs.toList(); pendingAddrs.clear()
+        return pendingPort to addrs
+    }
+
+    private fun sendNotify(port: Int, addrs: List<String>) {
+        if (port <= 0) return
+        runCatching {
+            openSocket(null).use { sock -> sendAll(sock, "$MAGIC:NOTIFY:$port".toByteArray(Charsets.UTF_8), addrs) }
+        }.onFailure { Timber.w(it, "clb discovery notify broadcast") }
+    }
+
+    // ---------------------------------------------------------------- 客户端：监听 NOTIFY
+
+    private val watchGeneration = AtomicLong(0L)
+    @Volatile private var watcherSocket: MulticastSocket? = null
+    @Volatile private var targetPort = 0
+    @Volatile private var notifyCallback: (() -> Unit)? = null
+    /** 最近一次收到 NOTIFY 的时间（elapsedRealtime），0 表示从未收到；供客户端判断 UDP 是否可用。 */
+    @Volatile var lastNotifyReceivedAt = 0L
+        private set
+
+    /**
+     * 监听指定房间端口的 NOTIFY。重复调用会替换端口与回调并重启监听线程；
+     * 每个线程只在自己仍是「当前代」时运行，退出时也只清理自己那一代的状态。
+     */
+    fun startWatch(roomPort: Int, onNotify: () -> Unit) {
+        if (roomPort <= 0) return
+        val myGen: Long
+        synchronized(this) {
+            myGen = watchGeneration.incrementAndGet()
+            runCatching { watcherSocket?.close() }; watcherSocket = null
+            targetPort = roomPort
+            notifyCallback = onNotify
+        }
+        acquireMulticast()
+        thread(name = "clb-discovery-watch", isDaemon = true) {
+            var sock: MulticastSocket? = null
+            try {
+                var attempt = 0
+                while (watchGeneration.get() == myGen) {
+                    try {
+                        sock = openSocket(DISCOVERY_PORT)
+                        synchronized(this) {
+                            if (watchGeneration.get() != myGen) { sock?.close(); return@thread }
+                            watcherSocket = sock
+                        }
+                        joinGroup(sock!!)
+                        sock!!.soTimeout = 1000
+                        Timber.i("clb watcher bound: port=%d target=%d", sock!!.localPort, roomPort)
+                        attempt = 0
+                        while (watchGeneration.get() == myGen) {
+                            val buf = ByteArray(512)
+                            val recv = DatagramPacket(buf, buf.size)
+                            try { sock!!.receive(recv) } catch (_: java.net.SocketTimeoutException) { continue }
+                            val data = String(recv.data, recv.offset, recv.length, Charsets.UTF_8)
+                            if (!data.startsWith("$MAGIC:NOTIFY:")) continue
+                            val port = data.removePrefix("$MAGIC:NOTIFY:").trim().toIntOrNull()
+                            if (port != null && port == targetPort && watchGeneration.get() == myGen) {
+                                lastNotifyReceivedAt = SystemClock.elapsedRealtime()
+                                runCatching { notifyCallback?.invoke() }.onFailure { Timber.w(it, "clb notify callback") }
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        if (watchGeneration.get() != myGen) break
+                        // 端口被占用 / 网络切换：退避后重绑，而不是让监听永久死掉。
+                        Timber.w(t, "clb discovery watcher error, rebinding")
+                        runCatching { sock?.close() }
+                        Thread.sleep((1000L shl attempt.coerceAtMost(5)).coerceAtMost(30_000L))
+                        attempt++
+                    }
+                }
+            } finally {
+                runCatching { sock?.close() }
+                synchronized(this) {
+                    if (watchGeneration.get() == myGen) { watcherSocket = null; notifyCallback = null; targetPort = 0 }
+                }
+                releaseMulticast()
+            }
+        }
+    }
+
     fun stopWatch() {
-        watcherRunning.set(false)
-        runCatching { watcherSocket?.close() }
-        watcherSocket = null
+        synchronized(this) {
+            watchGeneration.incrementAndGet()
+            runCatching { watcherSocket?.close() }
+            watcherSocket = null; notifyCallback = null; targetPort = 0
+        }
     }
 
     private fun announceBytes(): ByteArray =
         "$MAGIC:ANNOUNCE:$_serverPort:$_roomName".toByteArray(Charsets.UTF_8)
 
-    /** 从 ANNOUNCE 载荷解析出同步 HTTP 端口。 */
     private fun announcePort(data: String): Int? {
         if (!data.startsWith(MAGIC)) return null
         val parts = data.split(":")
         if (parts.size < 4) return null
         return parts[2].toIntOrNull()
-    }
-
-    /** 当前网段的广播地址（尽力推导，失败返回 null）。 */
-    private fun broadcastAddress(): String? {
-        return runCatching {
-            val ni = activeWifiInterface() ?: return@runCatching null
-            val ipv4 = ni.inetAddresses.toList().filterIsInstance<Inet4Address>()
-                .firstOrNull { !it.isLoopbackAddress } ?: return@runCatching null
-            val addr = ipv4.address
-            val broadcast = ni.interfaceAddresses.firstOrNull()?.broadcast?.address
-            if (broadcast != null && broadcast.size == 4) {
-                InetAddress.getByAddress(broadcast).hostAddress
-            } else {
-                // 退而 /24 假设
-                addr[3] = 255.toByte()
-                InetAddress.getByAddress(addr).hostAddress
-            }
-        }.getOrNull()
-    }
-
-    private fun activeWifiInterface(): NetworkInterface? {
-        return runCatching {
-            NetworkInterface.getNetworkInterfaces()!!.toList()
-                .firstOrNull { it.isUp && !it.isLoopback && it.name.startsWith("wlan") }
-        }.getOrNull()
-    }
-
-    private fun activeWifiIpv4(): String {
-        return runCatching {
-            NetworkInterface.getNetworkInterfaces()!!.toList()
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { it.inetAddresses.toList() }
-                .filterIsInstance<Inet4Address>()
-                .map { it.hostAddress }
-                .firstOrNull { !it.startsWith("127.") && !it.startsWith("0.") }
-        }.getOrNull() ?: ""
     }
 }

@@ -989,6 +989,10 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         Timber.d("onStartInputView: restarting=$restarting")
+        // 部分 ROM 会漏发剪贴板变化回调：键盘弹出时补查一次（按系统时间戳去重，不会重复记录）。
+        if (!restarting) org.fcitx.fcitx5.android.data.clipboard.ClipboardManager.recheckPrimaryClip()
+        // 词库同步：键盘显示期间不触发 Rime 合并（fcitx5-rime 的 sync 会结束输入会话，吞掉未上屏内容）
+        org.fcitx.fcitx5.android.data.clipboard.RimeLexiconSync.inputViewActive = true
         // 首个输入上下文建立后（此时 fcitx 才有活动 InputContext，activateIme/setCurrentInputMethod
         // 才能生效），自动确保默认输入法是中文，避免"冷启动/重启后第一个键盘是英文"。
         if (!initializedImeLanguage) {
@@ -1292,6 +1296,8 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         Timber.d("onFinishInputView: finishingInput=$finishingInput")
+        org.fcitx.fcitx5.android.data.clipboard.RimeLexiconSync.inputViewActive = false
+        org.fcitx.fcitx5.android.data.clipboard.RimeLexiconSync.onInputIdle()
         inputView?.endCalculatorInput()
         lastTypedCode = ""
         InputStatsManager.resetSession()

@@ -120,26 +120,38 @@ object ClipboardOplog {
         publish: (List<Op>) -> Unit = ::appendIncomingBatch) {
         check(staged.get() == null) { "不能在未提交的事务内发布历史日志" }
         val outbox = database.journalOutboxDao()
-        val batches = outbox.pending()
+        // 先只读索引（id/action/长度），payload 用到时再按片读取：超过 CursorWindow 的大批次也能回放。
+        val batches = outbox.pendingIndex()
         if (batches.isNotEmpty()) synchronized(monitor) { recoverInterruptedTail() }
+        suspend fun payloadOf(batch: org.fcitx.fcitx5.android.data.clipboard.db.ClipboardJournalOutboxIndex): String {
+            if (batch.size <= OUTBOX_SLICE_CHARS) return outbox.payloadSlice(batch.id, 1, OUTBOX_SLICE_CHARS) ?: ""
+            val sb = StringBuilder(batch.size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            var start = 1L
+            while (start <= batch.size) {
+                val piece = outbox.payloadSlice(batch.id, start, OUTBOX_SLICE_CHARS) ?: error("历史恢复批次读取中断")
+                if (piece.isEmpty()) break
+                sb.append(piece); start += piece.codePointCount(0, piece.length)
+            }
+            return sb.toString()
+        }
         var index = 0
         while (index < batches.size) {
             val batch = batches[index]
             if (batch.action == "delete" || batch.action == "delete_batch") {
                 // Consume only consecutive deletion records. The old single Deletion
                 // payload remains valid, while new transactions use one list payload.
-                val group = ArrayList<ClipboardJournalOutbox>()
+                val group = ArrayList<org.fcitx.fcitx5.android.data.clipboard.db.ClipboardJournalOutboxIndex>()
                 while (index < batches.size && (batches[index].action == "delete" || batches[index].action == "delete_batch")) {
                     group += batches[index++]
                 }
-                val deletions = group.flatMap { decodeDeletions(it) }
+                val deletions = group.flatMap { decodeDeletions(ClipboardJournalOutbox(it.id, payloadOf(it), it.action)) }
                 applyDeletions(database, deletions)
                 // Acknowledging happens only after the complete rewrite and reference
                 // cleanup succeed; any failure leaves every record replayable.
                 group.forEach { outbox.acknowledge(it.id) }
             } else {
                 when (batch.action) {
-                    "append" -> publish(json.decodeFromString<List<Op>>(batch.payload))
+                    "append" -> publish(json.decodeFromString<List<Op>>(payloadOf(batch)))
                     else -> error("未知历史恢复操作，已停止同步")
                 }
                 // Crash after fsync but before acknowledgment is safe: revision IDs deduplicate replay.
@@ -148,6 +160,9 @@ object ClipboardOplog {
             }
         }
     }
+
+    /** 回放出盒时每片读取的字符数：最坏每字符 4 字节（UTF-8），256K 字符 ≤ 1 MB，远低于 CursorWindow 的 2 MB。 */
+    private const val OUTBOX_SLICE_CHARS = 256 * 1024
 
     /** Contains no text/image bytes; committed in the same transaction as the row deletion. */
     @Serializable data class Deletion(val syncId: String, val through: Long, val hard: Boolean,

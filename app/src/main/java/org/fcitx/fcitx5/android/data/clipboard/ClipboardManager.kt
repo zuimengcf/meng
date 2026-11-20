@@ -97,7 +97,14 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
 
     /** 在同步写库锁内执行 [block]，保证所有同步写操作串行、不颠倒顺序。 */
     private var syncBaselineReady = false
+    private var oversizeRepaired = false
     internal suspend fun <T> withSyncLock(block: suspend () -> T): T = syncMutex.withLock {
+        // 先修复读不出来的超长行（> CursorWindow），否则下面任何读全表的操作都会永久失败。
+        if (!oversizeRepaired) {
+            runCatching { withContext(Dispatchers.IO) { ClipboardSizeLimits.repairOversizedRows(clbDb.openHelper.writableDatabase) } }
+                .onFailure { Timber.w(it, "clipboard oversize repair failed") }
+            oversizeRepaired = true
+        }
         // Recover committed history before baseline generation, purge, export or sync.
         ClipboardOplog.replayPending(clbDb)
         if (!syncBaselineReady) {
@@ -1055,14 +1062,22 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
             lastClipTimestamp = timestamp
             lastClipHash = hash
         }
-        launch {
+        launch { try {
             ClipboardDelivery.withLock { withSyncLock {
                 if (!MessagePhraseCipherClipboardPolicy.shouldStoreHistory(
                         enabledPref.getValue(), messagePhraseCipherEnabledPref.getValue(), validCiphertextHandled = false
                     )
                 ) return@withSyncLock
                 val imageEntry = captureImageEntry(clip)
-                val entry = imageEntry ?: ClipboardEntry.fromClipData(clip, transformer) ?: return@withSyncLock
+                val rawEntry = imageEntry ?: ClipboardEntry.fromClipData(clip, transformer) ?: return@withSyncLock
+                // 超长文本只保存开头并标注：整行超过 CursorWindow 会让之后所有读库、同步都失败。
+                val entry = if (ClipboardSizeLimits.isOversized(rawEntry.text)) {
+                    val chars = rawEntry.text.length
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        runCatching { android.widget.Toast.makeText(appContext, "复制的内容过大（$chars 字），剪贴板历史只保存开头部分", android.widget.Toast.LENGTH_LONG).show() }
+                    }
+                    rawEntry.copy(text = ClipboardSizeLimits.shorten(rawEntry.text))
+                } else rawEntry
                 if (!entry.type.startsWith("image/") && entry.text.isBlank()) return@withSyncLock
                 val isImage = entry.type.startsWith("image/") && entry.imagePath != null
                 try {
@@ -1116,7 +1131,24 @@ object ClipboardManager : ClipboardManager.OnPrimaryClipChangedListener,
                     updateLastEntry(entry)
                 }
             } }
-        }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (t: Throwable) {
+            // 拿同步锁时的恢复步骤失败（例如历史日志损坏）也不能让这次复制悄悄消失或带崩输入法。
+            Timber.e(t, "clipboard capture failed before writing")
+            ClipboardEntry.fromClipData(clip, transformer)?.let { runCatching { updateLastEntry(it.copy(text = ClipboardSizeLimits.shorten(it.text))) } }
+        } }
+    }
+
+    /**
+     * 输入法每次弹出时补查一次系统剪贴板。部分 ROM（剪贴板权限、省电策略）会漏发
+     * OnPrimaryClipChanged，导致复制了却没进历史、也不触发同步。描述里的时间戳去重，
+     * 同一次复制不会重复记录；Android 8 以下没有可靠的时间戳，不补查。
+     */
+    fun recheckPrimaryClip() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val clip = runCatching { clipboardManager.primaryClip }.getOrNull() ?: return
+        if (clip.description.timestamp == lastClipTimestamp) return
+        runCatching { onPrimaryClipChanged() }.onFailure { Timber.w(it, "clipboard recheck failed") }
     }
 
     private fun logPhraseClipboard(message: String) {

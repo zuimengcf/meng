@@ -29,8 +29,11 @@ import androidx.recyclerview.widget.RecyclerView
 import org.fcitx.fcitx5.android.R
 import org.fcitx.fcitx5.android.market.MirrorStatus
 import org.fcitx.fcitx5.android.market.SchemaListAdapter
+import org.fcitx.fcitx5.android.market.SchemaMarketTasks
 import org.fcitx.fcitx5.android.market.SchemaMarketViewModel
+import org.fcitx.fcitx5.android.market.SchemaSources
 import org.fcitx.fcitx5.android.market.SchemaSource
+import org.fcitx.fcitx5.android.market.SchemaExtraAsset
 import org.fcitx.fcitx5.android.ui.main.MainViewModel
 
 /**
@@ -44,6 +47,7 @@ class SchemaMarketFragment : Fragment() {
     private lateinit var adapter: SchemaListAdapter
 
     private var pendingImportSource: SchemaSource? = null
+    private var pendingImportExtra: SchemaExtraAsset? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -60,7 +64,7 @@ class SchemaMarketFragment : Fragment() {
         adapter = SchemaListAdapter(
             onShowLinks = { source -> showDownloadDialog(source) },
             onImport = { source -> launchFilePicker(source) },
-            onUninstall = { source -> viewModel.uninstall(source) },
+            onUninstall = { source -> confirmUninstall(source) },
         )
         list.adapter = adapter
 
@@ -75,13 +79,37 @@ class SchemaMarketFragment : Fragment() {
         }
 
         viewModel.sources.observe(viewLifecycleOwner) { adapter.submitList(it) }
-        viewModel.installedVersions.observe(viewLifecycleOwner) { adapter.notifyInstalled(it) }
+        viewModel.installedVersions.observe(viewLifecycleOwner) {
+            adapter.notifyInstalled(it, viewModel.installedFingerprints.value.orEmpty())
+        }
         viewModel.busy.observe(viewLifecycleOwner) { adapter.notifyBusy(it) }
+        viewModel.installedGeneration.observe(viewLifecycleOwner) { viewModel.refreshInstalled() }
         viewModel.message.observe(viewLifecycleOwner) { msg ->
-            if (msg.isNotEmpty()) {
-                android.widget.Toast.makeText(requireContext(), msg, android.widget.Toast.LENGTH_SHORT).show()
+            // 消息带序号：旋转屏幕 / 返回页面时不重放已经提示过的 Toast
+            if (msg != null && msg.id > SchemaMarketTasks.consumedMessageId) {
+                SchemaMarketTasks.consumedMessageId = msg.id
+                android.widget.Toast.makeText(requireContext(), msg.text, android.widget.Toast.LENGTH_LONG).show()
             }
         }
+        pendingImportSource = savedInstanceState?.getString(STATE_PENDING_IMPORT)?.let { id ->
+            SchemaSources.allFallback().firstOrNull { it.schemaId == id }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // 选文件期间 Activity 可能被回收：记住要导入到哪个方案，回来时不再误报「导入失败」
+        pendingImportSource?.let { outState.putString(STATE_PENDING_IMPORT, it.schemaId) }
+    }
+
+    /** 卸载会删除该方案装入的全部文件（可能上百个），必须二次确认。 */
+    private fun confirmUninstall(source: SchemaSource) {
+        AlertDialog.Builder(requireContext())
+            .setTitle("卸载「${source.displayName}」？")
+            .setMessage("将删除该方案装入且未被修改过的文件，并重新部署。你修改过的文件和用户词库不会删除。")
+            .setPositiveButton("卸载") { _, _ -> viewModel.uninstall(source) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** 弹出下载对话框：显示镜像连通状态、可点击链接，并提供「应用内下载」「导入」「复制全部」 */
@@ -128,7 +156,7 @@ class SchemaMarketFragment : Fragment() {
                 setTextColor(0xFF37474F.toInt())
                 setPadding(0, dp(2), 0, dp(4))
             })
-            // 语言模型操作行：下载 / 更新 / 卸载
+            // 语言模型操作行：下载 / 更新 / 卸载 / 导入本地文件
             container.addView(TextView(ctx).apply {
                 text = when {
                     installed && hasUpdate -> ctx.getString(R.string.schema_extra_action_update)
@@ -140,11 +168,20 @@ class SchemaMarketFragment : Fragment() {
                 setPadding(0, dp(2), 0, dp(4))
                 setOnClickListener {
                     if (installed && !hasUpdate) {
-                        viewModel.uninstallExtra(extra)
+                        AlertDialog.Builder(ctx).setTitle("卸载「${extra.displayName}」？")
+                            .setPositiveButton("卸载") { _, _ -> viewModel.uninstallExtra(extra) }
+                            .setNegativeButton(android.R.string.cancel, null).show()
                     } else {
                         viewModel.downloadAndInstallExtra(extra, source)
                     }
                 }
+            })
+            container.addView(TextView(ctx).apply {
+                text = "导入本地模型文件"
+                textSize = 14f
+                setTextColor(0xFF0277BD.toInt())
+                setPadding(0, dp(2), 0, dp(4))
+                setOnClickListener { launchExtraFilePicker(extra) }
             })
         }
         source.mirrors.forEach { mirror ->
@@ -221,24 +258,52 @@ class SchemaMarketFragment : Fragment() {
         }
     }
 
+    /** 拉起系统文件选择器，让用户选中本地的大模型语法包文件（.gram 等单文件资产） */
+    private fun launchExtraFilePicker(extra: SchemaExtraAsset) {
+        pendingImportExtra = extra
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        runCatching {
+            startActivityForResult(intent, REQ_IMPORT_EXTRA)
+        }.onFailure {
+            android.widget.Toast.makeText(requireContext(), R.string.schema_picker_failed, android.widget.Toast.LENGTH_SHORT).show()
+            pendingImportExtra = null
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_IMPORT_ZIP && resultCode == Activity.RESULT_OK) {
-            val source = pendingImportSource ?: run {
-                android.widget.Toast.makeText(requireContext(), R.string.schema_import_failed, android.widget.Toast.LENGTH_SHORT).show()
-                return
-            }
+        if (resultCode != Activity.RESULT_OK || data?.data == null) {
             pendingImportSource = null
-            val uri: Uri? = data?.data
-            if (uri == null) {
-                android.widget.Toast.makeText(requireContext(), R.string.schema_import_failed, android.widget.Toast.LENGTH_SHORT).show()
-                return
+            pendingImportExtra = null
+            return
+        }
+        val uri = data.data!!
+        when (requestCode) {
+            REQ_IMPORT_ZIP -> {
+                val source = pendingImportSource ?: run {
+                    android.widget.Toast.makeText(requireContext(), R.string.schema_import_failed, android.widget.Toast.LENGTH_SHORT).show()
+                    return
+                }
+                pendingImportSource = null
+                viewModel.importZip(source, uri)
             }
-            viewModel.importZip(source, uri)
+            REQ_IMPORT_EXTRA -> {
+                val extra = pendingImportExtra ?: run {
+                    android.widget.Toast.makeText(requireContext(), R.string.schema_import_failed, android.widget.Toast.LENGTH_SHORT).show()
+                    return
+                }
+                pendingImportExtra = null
+                viewModel.importExtraAsset(extra, uri)
+            }
         }
     }
 
     companion object {
         private const val REQ_IMPORT_ZIP = 3001
+        private const val REQ_IMPORT_EXTRA = 3002
+        private const val STATE_PENDING_IMPORT = "schema_market_pending_import"
     }
 }

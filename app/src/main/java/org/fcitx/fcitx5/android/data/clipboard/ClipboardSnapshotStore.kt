@@ -6,6 +6,7 @@ import kotlinx.serialization.json.Json
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardEntry
 import org.fcitx.fcitx5.android.data.clipboard.db.ClipboardGroup
 import org.fcitx.fcitx5.android.utils.appContext
+import timber.log.Timber
 import java.io.File
 import java.security.MessageDigest
 
@@ -233,7 +234,13 @@ object ClipboardSnapshotStore {
 
     private suspend fun mergeUnlocked(wire: ClipboardSyncPacket, authoritative: Boolean = false): Int {
         // blob/1：图片字节已由 blob_get 预先落盘，这里还原成旧格式后走原有合并逻辑，规则完全不变。
-        val packet = hydrate(wire, dropUnresolvedHistory = true)
+        val hydrated = hydrate(wire, dropUnresolvedHistory = true)
+        // 超长文本（> CursorWindow）写进 Room 后就再也读不出来、之后所有同步都会失败：旧协议下直接不导入。
+        // 不改写成截断版本，避免与对端按 updatedAt 比较时来回覆盖对端的完整原文。
+        val oversized = hydrated.entries.count { !it.deleted && ClipboardSizeLimits.isOversized(it.text) }
+        if (oversized > 0) Timber.w("clipboard merge skipped %d oversized entries", oversized)
+        val packet = if (oversized == 0) hydrated
+            else hydrated.copy(entries = hydrated.entries.filter { it.deleted || !ClipboardSizeLimits.isOversized(it.text) })
         // Run before every sync merge.  Keep only metadata tombstones for expired rows;
         // an old remote inventory/history must not resurrect their cleared plaintext.
         ClipboardPurge.purgeExpiredDeletedUnlocked()

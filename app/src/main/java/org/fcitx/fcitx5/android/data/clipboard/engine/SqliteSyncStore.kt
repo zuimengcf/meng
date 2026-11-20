@@ -45,6 +45,18 @@ class SqliteSyncStore(context: Context, dbName: String = "clipboard_sync_engine.
         db.enableWriteAheadLogging()
     }
 
+    /**
+     * 引擎库里单行超过 CursorWindow（约 2 MB）的记录读不出来，会让每次分页/合并都抛异常。
+     * 这些行只可能来自修复前收到的超长文本：删除对应操作与状态，下一次扫描会按（已截短的）Room 内容重建。
+     */
+    override fun onOpen(db: SQLiteDatabase) {
+        super.onOpen(db)
+        runCatching {
+            db.execSQL("DELETE FROM ops WHERE length(CAST(units AS BLOB)) > $MAX_ROW_BYTES")
+            db.execSQL("DELETE FROM state WHERE length(CAST(vals AS BLOB)) + length(CAST(clocks AS BLOB)) > $MAX_ROW_BYTES")
+        }
+    }
+
     private val db: SQLiteDatabase get() = writableDatabase
 
     override fun <T> transaction(block: () -> T): T {
@@ -170,6 +182,7 @@ class SqliteSyncStore(context: Context, dbName: String = "clipboard_sync_engine.
 
     companion object {
         private const val VERSION = 1
+        private const val MAX_ROW_BYTES = 1_800_000
         private const val OP_COLS = "origin, seq, coll, k, hlc, type, isCreate, units"
     }
 }

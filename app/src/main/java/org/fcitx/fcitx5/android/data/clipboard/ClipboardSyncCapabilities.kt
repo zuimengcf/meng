@@ -26,7 +26,19 @@ object ClipboardSyncCapabilities {
      */
     const val KICK_V1 = "kick/1"
 
-    val LOCAL: List<String> = listOf(BLOB_V1, ENGINE_V1)
+    /** 长轮询：主机内容一变就返回，不依赖 UDP NOTIFY（路由器隔离组播/广播、熄屏过滤时依然及时）。 */
+    const val WAIT_V1 = "wait/1"
+
+    /** 图片 1 MiB 分块传输（blob_get / blob_put 带 blobOffset/blobTotal），大图内存峰值从数倍图片大小降到约 1 MiB/块。 */
+    const val BLOB_V2 = "blob/2"
+
+    /**
+     * Rime 用户词库同步：交换 sync/<installation_id> 下的 *.userdb.txt 快照，由 Rime 自己的 sync_user_data 合并。
+     * 复用加密信封与 1 MiB 分块；任一端是旧版或未开启词库同步就不启用，剪切板同步完全不受影响。
+     */
+    const val LEXICON_V1 = "lexicon/1"
+
+    val LOCAL: List<String> = listOf(BLOB_V1, ENGINE_V1, WAIT_V1, BLOB_V2, LEXICON_V1)
 
     fun negotiated(peer: Collection<String>?): Set<String> =
         if (peer.isNullOrEmpty()) emptySet() else LOCAL.toSet().intersect(peer.toSet())

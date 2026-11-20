@@ -26,6 +26,10 @@
     <!-- 房间主机常驻前台服务需要在通知栏提供可见入口（Android 14+ 需声明 dataSync 前台服务类型） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 同步后台保活：connectedDevice 前台服务无 6 小时上限；主机持 CPU 唤醒锁，两端持 WiFi 锁；可引导加入电池优化白名单 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- remove intent queries merged from library manifest (namely Android-Image-Cropper) -->
     <queries tools:node="removeAll" />
@@ -162,7 +166,7 @@
         <service
             android:name=".data.clipboard.ClipboardSyncForegroundService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync|connectedDevice" />
 
         <receiver
             android:name=".ui.main.ImeUpdateReceiver"

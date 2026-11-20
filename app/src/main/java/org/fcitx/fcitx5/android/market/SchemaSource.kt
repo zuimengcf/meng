@@ -111,6 +111,8 @@ data class SchemaSource(
     val checking: Boolean = false,
     /** 最新版本/资产检查未成功；当前 version 仅供显示，不能作为更新判定依据。 */
     val versionCheckFailed: Boolean = false,
+    /** release 资产 zip 的官方 SHA-256（"sha256:<hex>"，来自 GitHub API）；有它才允许走第三方镜像。 */
+    val archiveDigest: String? = null,
 ) {
     /** 是否为 git 源码源 */
     val isGitSource: Boolean get() = sourceType == SourceType.GIT_SOURCE
@@ -282,7 +284,7 @@ object SchemaSources {
         sourceType = SourceType.GIT_SOURCE,
         gitBranch = ICE_BRANCH,
         stripTopDir = true,
-        expectedFiles = setOf("double_pinyin.schema.yaml"),
+        expectedFiles = setOf("rime_ice.schema.yaml"),
     )
 
     /** 薄荷配置（oh-my-rime）：git 源码整包源（无 release）。 */

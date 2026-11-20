@@ -68,12 +68,12 @@ object SchemaDownloadNotifier {
         } else {
             builder.setProgress(0, 0, true)
         }
-        ctx.notificationManager.notify(NOTIFY_ID, builder.build())
+        ctx.notificationManager.notify(idFor(source), builder.build())
     }
 
     /** 下载并安装成功 */
     fun showSuccess(source: SchemaSource) {
-        cancelProgress()
+        cancelProgress(source)
         val ctx = appContext
         NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_baseline_keyboard_24)
@@ -83,12 +83,12 @@ object SchemaDownloadNotifier {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(mainPendingIntent(ctx))
             .build()
-            .let { ctx.notificationManager.notify(NOTIFY_ID, it) }
+            .let { ctx.notificationManager.notify(idFor(source), it) }
     }
 
     /** 下载/安装失败 */
     fun showFailure(source: SchemaSource, reason: String?) {
-        cancelProgress()
+        cancelProgress(source)
         val ctx = appContext
         NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_baseline_sync_24)
@@ -98,11 +98,13 @@ object SchemaDownloadNotifier {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(mainPendingIntent(ctx))
             .build()
-            .let { ctx.notificationManager.notify(NOTIFY_ID, it) }
+            .let { ctx.notificationManager.notify(idFor(source), it) }
     }
 
-    /** 取消进程通知 */
-    fun cancelProgress() {
-        appContext.notificationManager.cancel(NOTIFY_ID)
+    /** 每个方案一个通知 id：同时下载两个方案时进度不再互相覆盖。 */
+    private fun idFor(source: SchemaSource): Int = NOTIFY_ID + (source.schemaId.hashCode() and 0xFF)
+
+    fun cancelProgress(source: SchemaSource) {
+        appContext.notificationManager.cancel(idFor(source))
     }
 }

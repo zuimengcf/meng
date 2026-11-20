@@ -26,6 +26,11 @@ internal object SchemaMarketFileOps {
     )
 
     private const val MAX_VERSION_FILE_BYTES = 4096
+    private const val MAX_EXTRACT_BYTES = 2L * 1024 * 1024 * 1024
+    private const val MAX_YAML_BYTES = 1024 * 1024
+    private val SCHEMA_ID = Regex("[A-Za-z0-9_.-]{1,64}")
+    const val SCHEMA_LIST_BEGIN = "# >>> meng-schema-market：方案商店自动维护，请勿手改此块"
+    const val SCHEMA_LIST_END = "# <<< meng-schema-market"
 
     data class OwnedFile(val path: String, val sha256: String?)
 
@@ -54,10 +59,11 @@ internal object SchemaMarketFileOps {
         return null
     }
 
-    fun sourceWithReleaseProbe(source: SchemaSource, version: String?, checked: Boolean): SchemaSource =
+    fun sourceWithReleaseProbe(source: SchemaSource, version: String?, checked: Boolean, digest: String? = null): SchemaSource =
         source.copy(
             version = version?.removePrefix("v") ?: source.version,
             versionCheckFailed = !checked,
+            archiveDigest = digest.takeIf { checked },
         )
 
     fun sourceWithAssetProbe(
@@ -101,12 +107,13 @@ internal object SchemaMarketFileOps {
         if (installedVersion == null || latest.versionCheckFailed) return false
         // 资产型/LTS 源（如 lmdg、git 源）：tag 恒定或 commit 频繁，版本号字符串比对没有意义，
         // 以资产指纹（SHA-256 / git:全SHA）是否变化为准；指纹相同即无更新。
-        // 旧版安装未记录指纹时回退版本号比对（git 源旧记录为 git·main / git·短SHA，仍可判）。
         if (latest.assetFingerprint != null) {
             return if (installedFingerprint != null) {
                 installedFingerprint != latest.assetFingerprint
             } else {
-                installedVersion != latest.version
+                // 历史遗留安装未记录指纹（如恒定 LTS tag 的 lmdg，或从旧版升级的 git 源）：
+                // 无法确认内容是否最新，视为可更新——点一次更新装好即记录指纹，之后判据恢复精确。
+                true
             }
         }
         return installedVersion != latest.version
@@ -132,7 +139,15 @@ internal object SchemaMarketFileOps {
             path.none { it.code < 0x20 || it.code == 0x7f } &&
             path.split('/').none { it == ".." || it == "." || it.isEmpty() }
 
-    private fun isProtectedConfig(path: String): Boolean = isGlobalConfig(path) || path.startsWith("custom/")
+    /**
+     * 已存在时不覆盖的文件：Rime 全局配置、custom/ 目录，以及用户自己维护的补丁和短语
+     * （任意层级的 *.custom.yaml、custom_phrase*.txt）。雾凇一类方案的用户正是在这些文件里加词、改配置。
+     */
+    fun isProtectedConfig(path: String): Boolean {
+        val name = path.substringAfterLast('/').lowercase()
+        return isGlobalConfig(path) || path.startsWith("custom/") ||
+            name.endsWith(".custom.yaml") || (name.startsWith("custom_phrase") && name.endsWith(".txt"))
+    }
 
     fun isExplicitlyUninstalled(schemaId: String, tombstones: Set<String>): Boolean = schemaId in tombstones
 
@@ -159,6 +174,10 @@ internal object SchemaMarketFileOps {
         expectedFiles: Set<String>,
         requireVersionFile: Boolean,
         stripTopDir: Boolean,
+        /** 受保护但可以更新的路径：现有内容与本方案上次安装时完全一致（用户没改过），更新时照常替换。 */
+        replaceableProtected: Set<String> = emptySet(),
+        /** 解压总量上限，防 zip 炸弹把存储写满。 */
+        maxTotalBytes: Long = MAX_EXTRACT_BYTES,
     ): List<String> {
         if (!zipFile.isFile || zipFile.length() <= 0L) throw IllegalArgumentException("ZIP 文件为空")
         stagingDir.deleteRecursively()
@@ -210,6 +229,7 @@ internal object SchemaMarketFileOps {
 
             val outputPaths = mutableListOf<String>()
             val seen = mutableSetOf<String>()
+            var totalBytes = 0L
             normalized.forEach { (entry, path) ->
                 if (!seen.add(path)) throw IllegalArgumentException("ZIP 包含重复路径：$path")
 
@@ -217,7 +237,7 @@ internal object SchemaMarketFileOps {
                 val liveTarget = File(installCanonical, path)
                 ensureInside(installCanonical, liveTarget)
                 val installable = !entry.isDirectory && !isUserDataPath(path) &&
-                    !(isProtectedConfig(path) && liveTarget.exists())
+                    !(isProtectedConfig(path) && liveTarget.exists() && path !in replaceableProtected)
                 val target = if (installable) File(stagingDir, path) else null
                 if (target != null) {
                     ensureInside(stagingDir.canonicalFile, target)
@@ -235,6 +255,8 @@ internal object SchemaMarketFileOps {
                             output?.write(buffer, 0, n)
                             crc.update(buffer, 0, n)
                             byteCount += n
+                            totalBytes += n
+                            if (totalBytes > maxTotalBytes) throw IllegalArgumentException("ZIP 解压后体积异常过大，已拒绝")
                         }
                     } finally {
                         output?.close()
@@ -251,6 +273,69 @@ internal object SchemaMarketFileOps {
             outputPaths
         }
         return entries
+    }
+
+    /** 读取 ZIP 内（规范化后）某个路径的文本，用于读包里的 default.yaml；不存在返回 null。 */
+    fun readZipText(zipFile: File, wanted: String, stripTopDir: Boolean): String? = ZipFile(zipFile).use { archive ->
+        val all = archive.entries().toListCompat()
+        val prefix = if (stripTopDir) commonTopDirectory(all.map { it.name }) else null
+        val entry = all.firstOrNull { !it.isDirectory && runCatching { normalizeEntryName(it.name, prefix) }.getOrNull() == wanted }
+            ?: return@use null
+        if (entry.size > MAX_YAML_BYTES) return@use null
+        archive.getInputStream(entry).use { String(it.readBytes(), Charsets.UTF_8) }
+    }
+
+    /**
+     * 从 default.yaml 文本里取 schema_list 的方案 id（只认 `- schema: xxx` / `- {schema: xxx}`，注释行跳过）。
+     * 只做逐行解析，不引入 YAML 库；遇到下一个顶层键即结束。
+     */
+    fun parseSchemaList(yaml: String): List<String> {
+        val result = mutableListOf<String>()
+        var inList = false
+        val item = Regex("""^\s*-\s*\{?\s*schema\s*:\s*["']?([A-Za-z0-9_.-]+)""")
+        yaml.lineSequence().forEach { raw ->
+            val line = raw.substringBefore(" #").trimEnd()
+            if (line.isBlank() || line.trimStart().startsWith("#")) return@forEach
+            if (!line.startsWith(" ") && !line.startsWith("\t") && !line.startsWith("-")) {
+                inList = line.trim().removeSurrounding("\"").startsWith("schema_list") && line.trim().endsWith(":")
+                return@forEach
+            }
+            if (inList) item.find(line)?.groupValues?.get(1)?.let { if (it !in result) result += it }
+        }
+        return result
+    }
+
+    /**
+     * 把方案商店需要追加的方案写进 default.custom.yaml 的托管块（`schema_list/+` 只追加，不动用户已有的列表）。
+     * 返回新文件内容；返回 null 表示文件结构无法安全改写（如 patch 写成了行内 `{}`），调用方应提示用户手动添加。
+     */
+    fun rewriteSchemaListPatch(existing: String?, append: List<String>): String? {
+        val ids = append.filter { SCHEMA_ID.matches(it) }.distinct()
+        val lines = (existing ?: "").lines().toMutableList()
+        // 先去掉旧的托管块
+        val begin = lines.indexOfFirst { it.trim() == SCHEMA_LIST_BEGIN }
+        if (begin >= 0) {
+            val end = lines.subList(begin, lines.size).indexOfFirst { it.trim() == SCHEMA_LIST_END }
+            if (end < 0) return null
+            repeat(end + 1) { lines.removeAt(begin) }
+        }
+        while (lines.isNotEmpty() && lines.last().isBlank()) lines.removeAt(lines.size - 1)
+        if (ids.isEmpty()) return if (existing == null) null else lines.joinToString("\n", postfix = "\n")
+        var patchIdx = lines.indexOfFirst { it.trimEnd() == "patch:" }
+        if (patchIdx < 0 && lines.any { it.startsWith("patch:") }) return null // 行内写法，不安全
+        if (patchIdx < 0) {
+            if (lines.isNotEmpty()) lines += ""
+            lines += "patch:"
+            patchIdx = lines.size - 1
+        }
+        // 沿用 patch 下第一个键的缩进
+        val indent = lines.drop(patchIdx + 1).firstOrNull { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            ?.takeWhile { it == ' ' }?.takeIf { it.isNotEmpty() } ?: "  "
+        val block = mutableListOf("$indent$SCHEMA_LIST_BEGIN", "$indent\"schema_list/+\":")
+        ids.forEach { block += "$indent  - schema: $it" }
+        block += "$indent$SCHEMA_LIST_END"
+        lines.addAll(patchIdx + 1, block)
+        return lines.joinToString("\n", postfix = "\n")
     }
 
     private fun commonTopDirectory(names: List<String>): String? {
@@ -303,7 +388,7 @@ internal object SchemaMarketFileOps {
 
     private fun isReservedInstallPath(path: String): Boolean = when (path.substringBefore('/')) {
         ".meng_schema_versions", ".meng_schema_fingerprints", ".meng_schema_uninstalled",
-        ".meng_schema_manifest" -> true
+        ".meng_schema_manifest", ".meng_schema_lists" -> true
         else -> path.substringBefore('/').startsWith(".meng-stage-")
     }
 
@@ -346,6 +431,19 @@ internal object SchemaMarketFileOps {
         }
         return "sha256:$hash"
     }
+
+    /** 按 ZIP 魔数（PK\x03\x04 / PK\x05\x06 / PK\x07\x08）判断文件是否为 zip 包。 */
+    fun isZipFile(file: File): Boolean = runCatching {
+        if (!file.isFile || file.length() < 4) return false
+        file.inputStream().use { input ->
+            val head = ByteArray(4)
+            val n = input.read(head)
+            n == 4 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte() &&
+                (head[2] == 0x03.toByte() && head[3] == 0x04.toByte() ||
+                    head[2] == 0x05.toByte() && head[3] == 0x06.toByte() ||
+                    head[2] == 0x07.toByte() && head[3] == 0x08.toByte())
+        }
+    }.getOrDefault(false)
 
     fun sha256(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

@@ -220,9 +220,20 @@ object ClipboardEngineSync {
 
     // ------------------------------------------------------------------ 版本向量 / 确认
 
+    /** 单页操作的总字符上限：200 条长文本叠在一起会变成上百 MB 的请求/响应，弱网下必然超时、被截断。 */
+    private const val PAGE_MAX_CHARS = 4L * 1024 * 1024
+
     fun page(remoteVv: Map<String, Long>, limit: Int): Pair<List<ClipboardEngineWireOp>, Boolean> {
         val p = engine.opsFor(remoteVv, limit.coerceIn(1, 1000))
-        return p.ops.map(ClipboardEngineMapping::toWire) to p.hasMore
+        val wire = p.ops.map(ClipboardEngineMapping::toWire)
+        // 按 (origin, seq) 顺序截尾：对端按序应用后版本向量照常推进，剩下的下一页再取。至少保留一条。
+        var total = 0L; var keep = 0
+        for (op in wire) {
+            total += op.units?.toString()?.length ?: 0
+            if (keep > 0 && total > PAGE_MAX_CHARS) break
+            keep++
+        }
+        return if (keep < wire.size) wire.subList(0, keep).toList() to true else wire to p.hasMore
     }
 
     fun versionVector(): Map<String, Long> = engine.versionVector()

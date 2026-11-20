@@ -29,6 +29,7 @@ class SchemaListAdapter(
 
     private val items = mutableListOf<SchemaSource>()
     private val installedVersions = mutableMapOf<String, String>()
+    private val installedFingerprints = mutableMapOf<String, String>()
     private val busy = mutableMapOf<String, Boolean>()
 
     /** 提交方案列表 */
@@ -39,9 +40,11 @@ class SchemaListAdapter(
     }
 
     /** 更新已安装版本表 */
-    fun notifyInstalled(versions: Map<String, String>) {
+    fun notifyInstalled(versions: Map<String, String>, fingerprints: Map<String, String> = emptyMap()) {
         installedVersions.clear()
         installedVersions.putAll(versions)
+        installedFingerprints.clear()
+        installedFingerprints.putAll(fingerprints)
         notifyDataSetChanged()
     }
 
@@ -76,7 +79,9 @@ class SchemaListAdapter(
             name.text = source.displayName
 
             val installed = installedVersions[source.schemaId]
-            val hasUpdate = installed != null && !source.checking && SchemaMarketManager.hasUpdate(source)
+            // 只用内存里的安装表判断，不在主线程逐项读文件和清单
+            val hasUpdate = installed != null && !source.checking &&
+                SchemaMarketFileOps.hasUpdate(installed, source, installedFingerprints[source.schemaId])
             // 展示版本：检测中不显示未探测的兜底值（避免把 git·main / 假 tag 当真实版本）；
             // 否则优先锚定的具体版本（LTS 资产日期 / git 短 SHA）
             val shownVersion = source.displayVersion ?: source.version
