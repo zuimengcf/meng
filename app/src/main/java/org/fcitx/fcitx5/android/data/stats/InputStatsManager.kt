@@ -541,10 +541,14 @@ object InputStatsManager {
         val habits = dao.habitMappings(limit = 10000)
         val seedSuggestion = readSeed("suggestion.tsv")
         val seedCorrection = readSeed("correction.tsv")
-        atomicWrite(java.io.File(dir, SUGGESTION_FILE), mergeSeed(seedSuggestion, assoc.map { "${it.prev}\t${it.next}\t${it.count}" }))
-        atomicWrite(java.io.File(dir, CORRECTION_FILE), mergeSeed(seedCorrection, habits.map { "${it.wrong}\t${it.correct}\t${it.count}" }))
+        atomicWrite(java.io.File(dir, SUGGESTION_FILE), mergeSeed(seedSuggestion, assoc.map { "${it.prev}\t${it.next}\t${learnedFreq(it.count)}" }))
+        atomicWrite(java.io.File(dir, CORRECTION_FILE), mergeSeed(seedCorrection, habits.map { "${it.wrong}\t${it.correct}\t${learnedFreq(it.count)}" }))
         org.fcitx.fcitx5.android.data.smart.SmartInputControl.writeNativeConfig(dir)
     }
+    /** 自学习条目的导出频次：映射到 1000+ 高位区间，让 native 端按频次降序排序时
+     *  用户学习到的联想/纠错优先于内置种子词表（种子联想 60~100、纠错 1），
+     *  实现「越学越靠前」。封顶防 int 溢出：count 上限 200 万，+1000 仍远小于 INT_MAX。 */
+    private fun learnedFreq(count: Long): Long = 1_000L + count.coerceAtMost(2_000_000L)
 
     private fun readSeed(name: String): List<String> = runCatching { appContext.assets.open("smart-input/$name").bufferedReader().readLines().filter { it.isNotBlank() && !it.trim().startsWith("#") } }.getOrDefault(emptyList())
     private fun mergeSeed(seed: List<String>, learned: List<String>): String {

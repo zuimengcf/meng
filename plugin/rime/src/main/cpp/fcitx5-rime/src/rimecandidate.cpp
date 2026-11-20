@@ -203,7 +203,7 @@ RimeSuggestionList::RimeSuggestionList(RimeEngine *engine, InputContext *ic,
     std::unordered_set<std::string> existing;
     const auto &all = builtinStore.load(suggestionFile(), false);
     const auto &ext = externalStore.load(externalSuggestionFile(), false);
-    const auto builtin = flags.suggestion_source == CandidateSource::External ? std::vector<std::string>{} : matchingByEndWord(all, endWord, existing, flags.suggestion_limit);
+    const auto builtin = flags.suggestion_source == CandidateSource::External ? std::vector<std::string>{} : matchingByEndWord(builtinStore, endWord, existing, flags.suggestion_limit);
     const auto externalMatches = externalCandidatesActive(flags, nowMs()) && flags.suggestion_source != CandidateSource::Builtin ? matchingExternalByKey(ext, endWord, existing, flags.suggestion_limit) : std::vector<std::string>{};
     const auto matches = mergeCandidateWords(externalMatches, builtin, flags.suggestion_limit);
     for (const auto &word : matches) {

@@ -102,3 +102,4 @@ lint/tmp/
 
 ### Kotlin ###
 .kotlin/
+ci_master_p13_apk.zip

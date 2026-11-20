@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -44,6 +45,28 @@ inline std::string normalizeSuggestionCode(std::string_view code) {
     return result;
 }
 
+/** Transparent hash for string keys so byCode() can heterogeneously find()
+ *  with a std::string_view without building a temporary std::string.
+ *  (std::unordered_map's default key hash is not transparent, so the
+ *  C++20 heterogeneous lookup candidate would not participate.) */
+struct TransparentStringHash {
+    using is_transparent = void;
+    std::size_t operator()(std::string_view value) const noexcept {
+        return std::hash<std::string_view>{}(value);
+    }
+    std::size_t operator()(const std::string &value) const noexcept {
+        return std::hash<std::string>{}(value);
+    }
+};
+/** Transparent key equality for the same heterogeneous lookup: C++20 requires
+ *  both the hash AND the comparator to expose is_transparent, and the default
+ *  std::equal_to<std::string> is not transparent. */
+struct TransparentStringEqual {
+    using is_transparent = void;
+    bool operator()(std::string_view a, std::string_view b) const noexcept {
+        return a == b;
+    }
+};
 class SuggestionStore {
 public:
     // pinyinCode=false is required for suggestion.dict, whose first column is a
@@ -86,14 +109,32 @@ public:
             return a.frequency > b.frequency;
         });
         entries_ = std::move(parsed); path_ = path; modified_ = modified; size_ = size;
-        pinyinCode_ = pinyinCode; valid_ = true; return entries_;
+        pinyinCode_ = pinyinCode; valid_ = true; rebuildIndex(); return entries_;
+    }
+    /** Exact-code lookup through the code→entries index; falls back to entries
+     *  themselves so callers keep working with or without the index. */
+    const std::vector<const SuggestionEntry *> *byCode(std::string_view code) const {
+        if (!valid_) return nullptr;
+        const auto it = index_.find(code);
+        return it == index_.end() ? nullptr : &it->second;
     }
 private:
-    void invalidate() { entries_.clear(); valid_ = false; }
-    static constexpr size_t kMaxBytes = 4 * 1024 * 1024, kMaxLines = 50000;
+    void invalidate() { entries_.clear(); index_.clear(); valid_ = false; }
+    void rebuildIndex() {
+        index_.clear();
+        index_.reserve(entries_.size() * 2);
+        for (const auto &e : entries_) index_[e.code].push_back(&e);
+    }
+    // The merged suggestion.dict ships ~70k seed rows plus up to 10k learned
+    // rows, so the legacy 50k-line / 4MiB guards would silently truncate the
+    // union. 100k lines / 8MiB keeps the merged file loadable end to end.
+    static constexpr size_t kMaxBytes = 8 * 1024 * 1024, kMaxLines = 100000;
     bool valid_ = false, pinyinCode_ = true; std::filesystem::path path_;
     std::filesystem::file_time_type modified_{}; uintmax_t size_ = 0;
     std::vector<SuggestionEntry> entries_;
+    std::unordered_map<std::string, std::vector<const SuggestionEntry *>,
+                       TransparentStringHash, TransparentStringEqual>
+        index_;
 };
 
 struct CorrectionOptions { bool habit = true; bool neighbor = true; bool fuzzy = true; };
@@ -197,6 +238,18 @@ inline std::vector<std::string> matchingByEndWord(const std::vector<SuggestionEn
     std::vector<std::string> out; if (endWord.empty() || limit == 0) return out;
     for (const auto &e : entries) if (e.code == endWord && existing.insert(e.word).second) {
         out.push_back(e.word); if (out.size() >= limit) break;
+    }
+    return out;
+}
+/** Indexed end-word matching: O(1) code lookup through the store's code→entries
+ *  hash instead of scanning the (now ~80k-row) merged suggestion.dict. */
+inline std::vector<std::string> matchingByEndWord(const SuggestionStore &store,
+    std::string_view endWord, std::unordered_set<std::string> existing, size_t limit = 5) {
+    std::vector<std::string> out; if (endWord.empty() || limit == 0) return out;
+    const auto *group = store.byCode(endWord);
+    if (!group) return out;
+    for (const auto *e : *group) if (existing.insert(e->word).second) {
+        out.push_back(e->word); if (out.size() >= limit) break;
     }
     return out;
 }

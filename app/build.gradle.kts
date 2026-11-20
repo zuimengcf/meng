@@ -38,6 +38,8 @@ android {
             resValue("mipmap", "app_icon", "@mipmap/ic_launcher")
             resValue("mipmap", "app_icon_round", "@mipmap/ic_launcher_round")
             resValue("string", "app_name", "@string/app_name_release")
+            // R8 代码裁剪（proguard-rules.pro 已 -dontobfuscate，只裁剪不混淆）
+            isMinifyEnabled = true
             proguardFile("proguard-rules.pro")
         }
         debug {

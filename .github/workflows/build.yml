@@ -32,7 +32,7 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build release APK
-        run: ./gradlew :app:assembleRelease --no-daemon
+        run: ./gradlew :app:assembleRelease -x buildSmartRime --no-daemon
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -44,3 +44,4 @@ jobs:
         with:
           files: app/build/outputs/apk/release/*.apk
           generate_release_notes: true
+          prerelease: true
