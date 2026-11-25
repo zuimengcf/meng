@@ -30,8 +30,8 @@ object OfficialFingerprints {
         "link-tools:2" to "a99f6368e101328dba5aa56c818568e3f34d14d17a3c402c33092e3cb6962394",
         // repeater v1
         "repeater:1" to "d73a5e6127b8d6ebd220d84e8aa76244373fdbedb57668987a9a447720655daf",
-        // smart-dict v1.1.113
-        "smart-dict:1001113" to "c6ce6e3c9cd47de82eabde4be443839cca6aa88343d23705a479477318a120bd",
+        // smart-dict v1.1.114
+        "smart-dict:1001114" to "204029f7e9c1b4148fadcafd6c769c84fc64b15e601b13442a3eefeb0da6c2a6",
         // smart-phrases v13
         "smart-phrases:13" to "1da082c197b1014a676aac1dd79f29d91043f60410d89d175037137ead712f93",
         // stickers v2
