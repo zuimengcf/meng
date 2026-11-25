@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 剪切板图片目录：跨应用读取图片（粘贴/commitContent）用 FileProvider 暴露，避免 DocumentsProvider 的 MANAGE_DOCUMENTS 权限导致目标应用无法读取 -->
+<!-- tts_audio：文字转语音直发的合成音频（cacheDir/tts_audio/），commitContent 提交给目标应用 -->
 <paths>
     <external-files-path name="clipboard_images" path="clipboard_images/" />
+    <cache-path name="tts_audio" path="tts_audio/" />
+    <!-- 插件安装目录：贴纸包等插件图片经 commitContent 直插时用 FileProvider 暴露 -->
+    <files-path name="plugins" path="plugins/" />
+    <!-- 文本转文件导出：files/documents/ 下生成的 txt/md/html，经 FileProvider 暴露给分享 -->
+    <files-path name="documents" path="documents/" />
 </paths>

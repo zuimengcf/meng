@@ -30,6 +30,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InlineSuggestionsRequest
 import android.view.inputmethod.InlineSuggestionsResponse
+import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputContentInfo
 import android.view.inputmethod.InputMethodSubtype
 import android.widget.FrameLayout
@@ -161,6 +162,28 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     fun isMessagePhraseCipherEnabled(): Boolean =
         AppPrefs.getInstance().internal.messagePhraseCipherEnabled.getValue()
 
+    /**
+     * 读取当前输入框整段文本（供面板型插件求值用）。
+     * 与 [readCurrentEditorTextForMessagePhraseCipher] 不同：不依赖任何开关、不受
+     * 「64 个 code point」上限约束，直接取当前编辑器全文（含光标前/后）。
+     * 密码/敏感框（capabilityFlags）仍会被门控拦截，返回 null。
+     * 注意：NoSpellCheck 只表示「不拼写检查」，聊天 App 输入框几乎都带此标志，
+     * 与安全性无关，不拦截——否则 TTS/插件面板在聊天场景全部失效。
+     * 失败或非完整提取返回 null（调用方自行降级）。
+     */
+    fun readCurrentEditorTextForPlugin(): String? {
+        if (capabilityFlags.has(CapabilityFlag.Password) ||
+            capabilityFlags.has(CapabilityFlag.Sensitive)
+        ) return null
+        val ic = currentInputConnection ?: return null
+        val request = ExtractedTextRequest().apply {
+            hintMaxChars = 65536
+            hintMaxLines = 1024
+        }
+        val extracted = runCatching { ic.getExtractedText(request, 0) }.getOrNull() ?: return null
+        return extracted.text?.toString()?.takeIf { it.isNotEmpty() }
+    }
+
     fun readCurrentEditorTextForMessagePhraseCipher(): MessagePhraseCipherEditorSnapshot? {
         if (!isMessagePhraseCipherEnabled() || !isMessagePhraseCipherAllowed()) return null
         val ic = currentInputConnection ?: return null
@@ -174,6 +197,33 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
         val complete = extracted.startOffset == 0 &&
             extracted.partialStartOffset == -1 && extracted.partialEndOffset == -1
         return MessagePhraseCipherEditorSnapshot(text, extracted.startOffset, complete)
+    }
+
+    /**
+     * 完整替换当前输入框全文（供面板型插件点按用，如词典点按 = 全文替换为词条+释义）。
+     * 读取全文 → 全选 → 替换为新文本。密码/敏感框禁用（与 readCurrentEditorTextForPlugin 同 gate）。
+     * 成功返回 true；无输入框/非完整提取/替换失败返回 false（调用方可以降级为普通 commit）。
+     */
+    fun replaceCurrentEditorTextForPlugin(replacement: String): Boolean {
+        if (capabilityFlags.has(CapabilityFlag.Password) ||
+            capabilityFlags.has(CapabilityFlag.Sensitive) ||
+            capabilityFlags.has(CapabilityFlag.NoSpellCheck)
+        ) return false
+        val ic = currentInputConnection ?: return false
+        val snapshot = readCurrentEditorTextForPlugin() ?: return false
+        // 全选现有全文再替换（getExtractedText 已拿到全文，直接 setSelection 全选）
+        val len = snapshot.length
+        if (len == 0) return false
+        var accepted = false
+        ic.withBatchEdit {
+            if (ic.setSelection(0, len)) {
+                resetComposingState()
+                accepted = ic.commitText(replacement, 1)
+            }
+        }
+        if (!accepted) return false
+        selection.predict(replacement.length)
+        return true
     }
 
     private val composing = CursorRange()
@@ -260,6 +310,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     override fun onCreate() {
         fcitx = FcitxDaemon.connect(javaClass.name)
         instance = this
+        org.fcitx.fcitx5.android.input.paste.PasteGateway.attach(this)
         lifecycleScope.launch {
             jobs.consumeEach { it.join() }
         }
@@ -625,6 +676,19 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
         }
     }
 
+    fun commitPaste(text: String) {
+        // 粘贴上屏：与引擎 commitText 平行但不进输入统计（粘贴内容不属于打字习惯，
+        // 不该进 recordOutcome/recordUnlocked 学习）。
+        val ic = currentInputConnection ?: return
+        resetComposingState()
+        lastTypedCode = ""
+        selection.predict(selection.latest.start + text.length)
+        ic.commitText(text, 1)
+    }
+
+    /** PasteGateway 读取当前能力标志（密码框门控用） */
+    fun capabilityFlags(): org.fcitx.fcitx5.android.core.CapabilityFlags = capabilityFlags
+
     /**
      * 直插图片到当前输入框（若目标声明支持图片类型内容提交）。
      * 用 FileProvider 暴露的 content URI 构造 InputContentInfo，成功后返回 true；
@@ -666,11 +730,84 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
                 file.name, arrayOf(actualMime)
             )
             val info = InputContentInfo(contentUri, description)
-            val ok = ic.commitContent(info, 0, null)
+            // 必须授予目标应用读取 URI 的临时权限（INPUT_CONTENT_GRANT_READ_URI_PERMISSION），
+            // 否则目标应用读不到 FileProvider 暴露的文件，报「不支持的附件」。
+            val ok = ic.commitContent(
+                info,
+                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION,
+                null
+            )
             if (ok) resetComposingState()
             ok
         } catch (e: Exception) {
             Timber.w(e, "commitImage failed")
+            false
+        }
+    }
+
+    /**
+     * 当前编辑器是否声明接受音频类内容提交（微信/QQ 语音输入框等）。
+     * 用 contentMimeTypes 判定；不支持时上层不触发 TTS，避免浪费合成。
+     */
+    fun supportsAudioCommit(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        if (currentInputConnection == null) return false
+        val mimeTypes = currentInputEditorInfo.contentMimeTypes ?: return false
+        return mimeTypes.any {
+            it == "*/*" || it == "audio/*" ||
+                (it.endsWith("/*") && "audio/*".startsWith(it.removeSuffix("/*"), ignoreCase = true))
+        }
+    }
+
+    /**
+     * 直插音频到当前输入框（文字转语音直发用）。
+     * 与 [commitImage] 同构：FileProvider 暴露 content URI → InputContentInfo → commitContent。
+     */
+    fun commitAudio(audioPath: String, mime: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        val ic = currentInputConnection ?: return false
+        val file = File(audioPath)
+        if (!file.exists() || file.length() == 0L) return false
+
+        val actualMime = when (file.extension.lowercase()) {
+            "wav" -> "audio/wav"
+            "mp3" -> "audio/mpeg"
+            "aac", "m4a" -> "audio/mp4"
+            "ogg" -> "audio/ogg"
+            "amr" -> "audio/amr"
+            "3gp" -> "audio/3gpp"
+            else -> mime
+        }
+        val mimeTypes = currentInputEditorInfo.contentMimeTypes
+        if (mimeTypes.isNullOrEmpty() || !mimeTypes.any {
+                it == "*/*" || it == "audio/*" ||
+                    it.equals(actualMime, ignoreCase = true) ||
+                    (it.endsWith("/*") && actualMime.startsWith(it.removeSuffix("/*"), ignoreCase = true))
+            }) {
+            return false
+        }
+
+        return try {
+            // FileProvider 暴露 cacheDir/tts_audio/（见 res/xml/filepaths.xml）
+            val contentUri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "${packageName}.fileprovider",
+                file,
+            )
+            val description = ClipDescription(
+                file.name, arrayOf(actualMime)
+            )
+            val info = InputContentInfo(contentUri, description)
+            // 与 commitImage 同：必须授予目标应用读取 URI 的临时权限，否则目标应用读不到文件
+            val ok = ic.commitContent(
+                info,
+                InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION,
+                null
+            )
+            if (ok) resetComposingState()
+            ok
+        } catch (e: Exception) {
+            Timber.w(e, "commitAudio failed")
             false
         }
     }
@@ -1339,6 +1476,7 @@ class FcitxInputMethodService : LifecycleInputMethodService() {
     }
 
     override fun onDestroy() {
+        org.fcitx.fcitx5.android.input.paste.PasteGateway.detach(this)
         if (instance === this) instance = null
         recreateInputViewPrefs.forEach {
             it.unregisterOnChangeListener(recreateInputViewListener)

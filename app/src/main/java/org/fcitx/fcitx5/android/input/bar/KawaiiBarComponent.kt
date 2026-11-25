@@ -61,6 +61,8 @@ import org.fcitx.fcitx5.android.input.dependency.context
 import org.fcitx.fcitx5.android.input.dependency.inputMethodService
 import org.fcitx.fcitx5.android.input.dependency.theme
 import org.fcitx.fcitx5.android.input.editing.TextEditingWindow
+import org.fcitx.fcitx5.android.input.paste.PasteGateway
+import org.fcitx.fcitx5.android.plugin.PasteSource
 import org.fcitx.fcitx5.android.input.keyboard.CommonKeyActionListener
 import org.fcitx.fcitx5.android.input.keyboard.CustomGestureView
 import org.fcitx.fcitx5.android.input.keyboard.KeyboardWindow
@@ -318,7 +320,17 @@ class KawaiiBarComponent : UniqueViewComponent<KawaiiBarComponent, FrameLayout>(
             }
             clipboardUi.suggestionView.apply {
                 setOnClickListener {
-                    ClipboardManager.consumeClipboardSuggestionText()?.let { service.commitText(it) }
+                    // 先判断是否为自动解密的临时明文（consume 会清掉 transient 标记，必须先判）
+                    val wasTransient = ClipboardManager.hasTransientDecryptedClipboardEntry()
+                    val text = ClipboardManager.consumeClipboardSuggestionText()
+                    if (text != null) {
+                        if (wasTransient) {
+                            // 临时明文（sensitive 语义）不进插件管线，直接上屏
+                            service.commitPaste(text)
+                        } else {
+                            PasteGateway.paste(PasteSource.Suggestion, text, null)
+                        }
+                    }
                     clipboardTimeoutJob?.cancel()
                     clipboardTimeoutJob = null
                     isClipboardFresh = false

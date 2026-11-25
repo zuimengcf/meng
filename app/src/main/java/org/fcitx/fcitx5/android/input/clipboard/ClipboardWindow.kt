@@ -35,6 +35,8 @@ import org.fcitx.fcitx5.android.data.prefs.ManagedPreference
 import org.fcitx.fcitx5.android.data.theme.ThemeManager
 import org.fcitx.fcitx5.android.input.FcitxInputMethodService
 import org.fcitx.fcitx5.android.input.clipboard.ClipboardStateMachine.BooleanKey.ClipboardDbEmpty
+import org.fcitx.fcitx5.android.input.paste.PasteGateway
+import org.fcitx.fcitx5.android.plugin.PasteSource
 import org.fcitx.fcitx5.android.input.clipboard.ClipboardStateMachine.BooleanKey.ClipboardListeningEnabled
 import org.fcitx.fcitx5.android.input.clipboard.ClipboardStateMachine.State.AddMore
 import org.fcitx.fcitx5.android.input.clipboard.ClipboardStateMachine.State.EnableListening
@@ -236,7 +238,7 @@ class ClipboardWindow : InputWindow.ExtendedInputWindow<ClipboardWindow>() {
                         context.toast(R.string.clipboard_image_copied)
                     }
                 } else {
-                    service.commitText(entry.text)
+                    PasteGateway.paste(PasteSource.Panel, entry.text, entry)
                 }
                 if (clipboardReturnAfterPaste) windowManager.attachWindow(KeyboardWindow)
             }

@@ -22,6 +22,7 @@ import org.fcitx.fcitx5.android.ui.main.AboutFragment
 import org.fcitx.fcitx5.android.ui.main.DeveloperFragment
 import org.fcitx.fcitx5.android.ui.main.LicensesFragment
 import org.fcitx.fcitx5.android.ui.main.MainFragment
+import org.fcitx.fcitx5.android.ui.main.PluginDetailFragment
 import org.fcitx.fcitx5.android.ui.main.PluginFragment
 import org.fcitx.fcitx5.android.ui.main.settings.addon.AddonConfigFragment
 import org.fcitx.fcitx5.android.ui.main.settings.addon.AddonListFragment
@@ -84,7 +85,6 @@ sealed class SettingsRoute : Parcelable {
 
     @Serializable
     data object Symbol : SettingsRoute()
-
     /* ========== 梦 · 智能输入 ========== */
 
     @Serializable
@@ -92,17 +92,16 @@ sealed class SettingsRoute : Parcelable {
 
     @Serializable
     data object InputStats : SettingsRoute()
-
     @Serializable
     data object ManualCorrectionRules : SettingsRoute()
-
-
     @Serializable
     data object Plugin : SettingsRoute()
-
+    @Serializable
+    data class PluginDetail(val pluginId: String) : SettingsRoute()
+    @Serializable
+    data object StatusAreaOrder : SettingsRoute()
     @Serializable
     data object Advanced : SettingsRoute()
-
     @Serializable
     data object Developer : SettingsRoute()
 
@@ -255,6 +254,12 @@ sealed class SettingsRoute : Parcelable {
             }
             fragment<PluginFragment, Plugin> {
                 label = ctx.getString(R.string.plugins)
+            }
+            fragment<PluginDetailFragment, PluginDetail> {
+                label = ctx.getString(R.string.plugins)
+            }
+            fragment<org.fcitx.fcitx5.android.ui.main.StatusAreaOrderFragment, StatusAreaOrder> {
+                label = "更多面板排序"
             }
             fragment<AdvancedSettingsFragment, Advanced> {
                 label = ctx.getString(R.string.advanced)

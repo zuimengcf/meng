@@ -13,6 +13,8 @@ import org.fcitx.fcitx5.android.data.theme.ThemeManager
 import org.fcitx.fcitx5.android.input.FcitxInputMethodService
 import org.fcitx.fcitx5.android.input.broadcast.InputBroadcastReceiver
 import org.fcitx.fcitx5.android.input.clipboard.ClipboardWindow
+import org.fcitx.fcitx5.android.input.paste.PasteGateway
+import org.fcitx.fcitx5.android.plugin.PasteSource
 import org.fcitx.fcitx5.android.input.dependency.inputMethodService
 import org.fcitx.fcitx5.android.input.dependency.theme
 import org.fcitx.fcitx5.android.input.keyboard.CustomGestureView
@@ -86,7 +88,20 @@ class TextEditingWindow : InputWindow.ExtendedInputWindow<TextEditingWindow>(),
             }
             pasteButton.setOnClickListener {
                 userSelection = false
-                service.currentInputConnection?.performContextMenuAction(android.R.id.paste)
+                // 纯文本剪贴板走 PasteGateway（插件管线）；富文本/URI 保留宿主自粘行为
+                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                val clip = cm.primaryClip
+                val item = clip?.takeIf { clip.itemCount > 0 }?.getItemAt(0)
+                val text = item?.coerceToText(context)?.toString()
+                val isPureText = clip != null && !clip.description.hasMimeType("text/html") &&
+                    !clip.description.hasMimeType("text/*intent") &&
+                    text != null
+                if (isPureText && text!!.isNotEmpty()) {
+                    PasteGateway.paste(PasteSource.EditButton, text, null)
+                } else {
+                    service.currentInputConnection?.performContextMenuAction(android.R.id.paste)
+                }
             }
             backspaceButton.onClickWithRepeating {
                 userSelection = false

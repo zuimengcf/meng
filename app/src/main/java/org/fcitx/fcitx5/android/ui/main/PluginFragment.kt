@@ -27,13 +27,38 @@ import org.fcitx.fcitx5.android.daemon.FcitxDaemon
 import org.fcitx.fcitx5.android.ui.common.PaddingPreferenceFragment
 import org.fcitx.fcitx5.android.utils.addCategory
 import org.fcitx.fcitx5.android.utils.addPreference
-
+import androidx.activity.result.contract.ActivityResultContracts
+import org.fcitx.fcitx5.android.utils.navigateWithAnim
+import org.fcitx.fcitx5.android.utils.toast
 class PluginFragment : PaddingPreferenceFragment() {
-
+    // 安装/更新插件：选择 .meng 独立安装包
+    private val installPluginLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) installPlugin(uri)
+    }
+    private fun installPlugin(uri: Uri) {
+        // 兼容 zip 批量容器与单 .meng 包：宿主按内容自动检测，无需区分 mime。
+        val r = org.fcitx.fcitx5.android.plugin.PluginHost.installMengOrZip(uri)
+        val ok = r.results.filter { it.success }
+        if (ok.isNotEmpty()) {
+            // 官方/第三方提示：指纹校验命中的标「官方」，其余提示第三方（免责）
+            val parts = ok.map { res ->
+                val tag = if (res.official) "[官方]" else "[第三方]"
+                "$tag ${res.pluginId ?: "?"}"
+            }
+            val names = parts.joinToString().take(80)
+            requireContext().toast(getString(R.string.plugin_install_ok) + " $names")
+            preferenceScreen = createPreferenceScreen()
+        } else {
+            val err = r.results.firstOrNull()?.error
+            requireContext().toast(getString(R.string.plugin_install_invalid) + (err?.let { ": $it" } ?: ""))
+        }
+    }
     private var firstRun = true
 
     private lateinit var synced: DataManager.PluginSet
     private lateinit var detected: DataManager.PluginSet
+    /** 上一次渲染的应用级（.meng）插件 id 快照；用于检测卸载/安装后的变化 */
+    private var lastAppPluginIds: Set<String>? = null
 
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -62,15 +87,22 @@ class PluginFragment : PaddingPreferenceFragment() {
         DataManager.whenSynced {
             synced = DataManager.getSyncedPluginSet()
             detected = DataManager.detectPlugins()
+            lastAppPluginIds = appPluginIds()
             preferenceScreen = createPreferenceScreen()
         }
     }
 
+    /** 当前 Host 纳管的应用级（.meng）插件 id 集合 */
+    private fun appPluginIds(): Set<String> =
+        org.fcitx.fcitx5.android.plugin.PluginHost.snapshot().map { it.manifest.id }.toSet()
+
     private fun refreshPreferencesWhenNeeded() {
         DataManager.whenSynced {
             val newDetected = DataManager.detectPlugins()
-            if (detected != newDetected) {
+            val newAppPluginIds = appPluginIds()
+            if (detected != newDetected || lastAppPluginIds != newAppPluginIds) {
                 detected = newDetected
+                lastAppPluginIds = newAppPluginIds
                 preferenceScreen = createPreferenceScreen()
             }
         }
@@ -115,7 +147,9 @@ class PluginFragment : PaddingPreferenceFragment() {
                 }
             }
             val (loaded, failed) = synced
-            if (loaded.isEmpty() && failed.isEmpty()) {
+            val appPlugins = org.fcitx.fcitx5.android.plugin.PluginHost.snapshot()
+            val hasEnginePlugins = loaded.isNotEmpty() || failed.isNotEmpty()
+            if (!hasEnginePlugins && appPlugins.isEmpty()) {
                 // use PreferenceCategory to show a divider below the "reload" preference
                 addCategory(R.string.no_plugins) {
                     isIconSpaceReserved = false
@@ -124,7 +158,6 @@ class PluginFragment : PaddingPreferenceFragment() {
                     // but we can make it looks like a normal preference
                     layoutResource = androidx.preference.R.layout.preference_material
                 }
-                return@apply
             }
             if (loaded.isNotEmpty()) {
                 addCategory(R.string.plugins_loaded) {
@@ -170,8 +203,43 @@ class PluginFragment : PaddingPreferenceFragment() {
                     }
                 }
             }
+            // ===== 应用级插件（.meng 独立安装，不随主程序内置）=====
+            // 「更多」面板排序入口（静态功能 + 插件 + 引擎状态统一排序）
+            addPreference("更多面板排序", "长按拖动调整「更多」面板中功能与插件的顺序", icon = R.drawable.ic_baseline_drag_handle_24) {
+                navigateWithAnim(org.fcitx.fcitx5.android.ui.main.settings.SettingsRoute.StatusAreaOrder)
+            }
+            // 常驻「安装插件」入口（不只在空列表时显示）
+            addPreference(getString(R.string.plugin_install_prompt), getString(R.string.plugin_install_prompt_hint), icon = R.drawable.ic_baseline_plus_24) {
+                installPluginLauncher.launch("application/octet-stream")
+            }
+            addCategory(R.string.plugins_app) {
+                isIconSpaceReserved = false
+                if (appPlugins.isEmpty()) {
+                    // 未安装任何插件：提示
+                    addPreference(getString(R.string.plugins_app), getString(R.string.no_plugins), icon = R.drawable.ic_baseline_extension_24)
+                } else {
+                    // 每个插件一行：名称+版本+状态，点击进详情页
+                    appPlugins.forEach { info ->
+                        val m = info.manifest
+                        val stateText = when (info.state) {
+                            org.fcitx.fcitx5.android.plugin.PluginState.Enabled ->
+                                getString(R.string.plugin_state_enabled)
+                            org.fcitx.fcitx5.android.plugin.PluginState.Disabled ->
+                                getString(R.string.plugin_state_disabled)
+                            org.fcitx.fcitx5.android.plugin.PluginState.Tripped ->
+                                getString(R.string.plugin_state_tripped)
+                            org.fcitx.fcitx5.android.plugin.PluginState.Incompatible ->
+                                getString(R.string.plugin_state_incompatible)
+                        }
+                        // 官方徽标：安装时指纹校验已通过（id 在官方表内视为官方包）
+                        val officialTag = if (org.fcitx.fcitx5.android.plugin.OfficialFingerprints.isOfficialId(m.id)) " · 官方" else ""
+                        addPreference("${m.name}$officialTag  v${m.versionText.ifEmpty { m.version.toString() }}", stateText, icon = m.iconRes()) {
+                            navigateWithAnim(org.fcitx.fcitx5.android.ui.main.settings.SettingsRoute.PluginDetail(m.id))
+                        }
+                    }
+                }
+            }
         }
-
     private fun startPluginAboutActivity(pkg: String): Boolean {
         val ctx = requireContext()
         val pm = ctx.packageManager

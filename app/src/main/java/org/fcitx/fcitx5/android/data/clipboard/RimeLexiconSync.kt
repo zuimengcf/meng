@@ -56,6 +56,9 @@ object RimeLexiconSync {
     private val SAFE_ID = Regex("[A-Za-z0-9_.-]{1,64}")
     private val SAFE_NAME = Regex("[A-Za-z0-9_.+-]{1,96}\\.userdb\\.txt")
     private const val HEADER = "# Rime user dictionary"
+    /** 跨设备同步的配置词典：Rime 通用「自定义短语」源文件（非 userdb，静态词典）。
+     * 万象/官方方案的 custom_phrase 都从这里编译；随词库快照一起经 lexicon 通道传递。 */
+    private const val CUSTOM_PHRASE_CONFIG = "custom_phrase.dict.yaml"
 
     /** 自动词库同步间隔（毫秒）：默认 60 分钟（与剪贴板长轮询周期一致），用户可自定义。 */
     val AUTO_INTERVAL_MS: Long get() = autoIntervalMin() * 60_000L
@@ -136,7 +139,8 @@ object RimeLexiconSync {
 
     /** 点开头是 Rime 自己的隐藏临时目录（如 .temp），不能当设备 id，也不能被下载落盘。 */
     fun isSafeId(id: String) = SAFE_ID.matches(id) && !id.startsWith(".")
-    fun isSafeName(name: String) = SAFE_NAME.matches(name)
+    fun isSafeName(name: String) = SAFE_NAME.matches(name) || name == CUSTOM_PHRASE_CONFIG
+    private fun isCustomPhraseConfig(name: String) = name == CUSTOM_PHRASE_CONFIG
 
     /**
      * 同步前的自检：installation.yaml 缺失则触发一次部署让 Rime 生成；
@@ -185,6 +189,17 @@ object RimeLexiconSync {
             n > 0 && String(buf, 0, n, Charsets.UTF_8).trimStart('\uFEFF').startsWith(HEADER)
         }
     }.getOrDefault(false)
+
+    /** 静态词典（custom_phrase 等配置源文件）的文件头：`# Rime dictionary`。 */
+    private fun hasRimeDictHeader(f: File): Boolean = runCatching {
+        f.inputStream().use { input ->
+            val buf = ByteArray(64); val n = input.read(buf)
+            n > 0 && String(buf, 0, n, Charsets.UTF_8).trimStart('\uFEFF').startsWith("# Rime dictionary")
+        }
+    }.getOrDefault(false)
+
+    private fun configAcceptable(name: String, f: File): Boolean =
+        if (isCustomPhraseConfig(name)) hasRimeDictHeader(f) else hasRimeHeader(f)
 
     fun sha256(f: File): String = synchronized(shaCache) {
         val key = f.absolutePath
@@ -248,7 +263,7 @@ object RimeLexiconSync {
             if (part.length() < total) return@withLock false
             val actual = sha256(part)
             if (actual != sha) { part.delete(); throw IllegalArgumentException("词库快照校验失败（SHA-256 不一致）") }
-            if (!hasRimeHeader(part)) { part.delete(); throw IllegalArgumentException("不是 Rime 用户词库快照") }
+            if (!configAcceptable(name, part)) { part.delete(); throw IllegalArgumentException("不是有效的 Rime 词典/快照文件") }
             val target = fileFor(owner, name)
             target.parentFile?.mkdirs()
             if (!part.renameTo(target)) {
@@ -341,6 +356,10 @@ object RimeLexiconSync {
         me.let { preBackupConfigFiles(rimeDir(), File(syncDir(), it)) }
         if (!runRime("sync")) { mergePending = true; return false }
         mergePending = false
+        // custom_phrase 是静态词典（enable_user_dict=false），Rime sync 只合并 userdb 不会动它：
+        // 把其他设备 sync/<id>/ 传来的 custom_phrase.dict.yaml 合并进本机 rime 根目录，变化时重新编译。
+        val customChanged = mergeCustomPhraseConfig()
+        if (customChanged) runRime("deploy")
         prefs().edit().putLong(KEY_LAST_EXPORT, System.currentTimeMillis()).apply()
         val deadline = SystemClock.elapsedRealtime() + EXPORT_WAIT_MS
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -385,6 +404,62 @@ object RimeLexiconSync {
                     Timber.w(it, "pre-backup ${src.name} failed")
                 }
             }
+    }
+
+    /**
+     * 把其他设备 sync/<id>/ 传来的 custom_phrase.dict.yaml 合并进本机 rime 根目录。
+     * custom_phrase 是静态词典（enable_user_dict=false），Rime sync 原生只合并 userdb 不碰它，
+     * 这里只能应用层合并：以本机现有文件为基础（保留原有词条与顺序），把各设备文件里
+     * 「本机还没有的 词+编码」词条追加进去（按词+编码去重），变化时返回 true（调用方随后 deploy 重新编译）。
+     * 本机自己的 sync/<me>/ 是上游导出，不参与合并。
+     */
+    private fun mergeCustomPhraseConfig(): Boolean {
+        val me = installationId() ?: return false
+        val target = File(rimeDir(), CUSTOM_PHRASE_CONFIG)
+        if (!target.isFile) return false
+        val baseLines = target.readLines()
+        // 词条只统计 YAML 文档分隔符（---...---）之后、且含 Tab 编码的行；头注释保持原样。
+        val bodyStart = baseLines.indexOfFirst { it.trim() == "---" }
+        val bodyFrom = (bodyStart + 1).coerceAtLeast(0)
+        fun isEntry(line: String) = line.isNotBlank() && !line.trimStart().startsWith('#') && line.split('\t').size >= 2
+
+        // 以本机现有词条为基线集合
+        val seen = LinkedHashSet<String>()
+        baseLines.drop(bodyFrom).filter { isEntry(it) }.forEach { seen += it.trim() }
+        val appended = mutableListOf<String>()
+        syncDir().listFiles().orEmpty()
+            .filter { it.isDirectory && isSafeId(it.name) && it.name != me }
+            .forEach { sub ->
+                val src = File(sub, CUSTOM_PHRASE_CONFIG)
+                if (!src.isFile || !hasRimeDictHeader(src)) return@forEach
+                val sBody = src.readLines().drop(
+                    src.readLines().indexOfFirst { it.trim() == "---" }.let { if (it < 0) 0 else it + 1 })
+                sBody.forEach { l ->
+                    if (!isEntry(l)) return@forEach
+                    val t = l.trim()
+                    if (seen.add(t)) appended += t // 新词，追加
+                }
+            }
+        if (appended.isEmpty()) return false
+
+        val finalLines = baseLines.toMutableList().apply {
+            if (lastOrNull()?.isNotBlank() == true) add("")
+            addAll(appended)
+        }
+        val tmp = File(rimeDir(), ".${CUSTOM_PHRASE_CONFIG}.meng-sync-tmp")
+        var ok = false
+        runCatching {
+            tmp.writeText(finalLines.joinToString("\n", postfix = "\n"), Charsets.UTF_8)
+            if (!tmp.renameTo(target)) {
+                target.delete()
+                if (!tmp.renameTo(target)) error("改名失败")
+            }
+            ok = true
+        }.onFailure {
+            Timber.w(it, "lexicon: merge custom_phrase config failed")
+        }.also { tmp.delete() }
+        if (ok) Timber.i("lexicon: merged custom_phrase, appended %d entries from other devices", appended.size)
+        return ok
     }
 
     /** 键盘收起：有待合并的快照就补做（延迟 3 秒，避免切换输入框时的瞬时收起）。 */

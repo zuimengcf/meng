@@ -141,12 +141,14 @@ internal object SchemaMarketFileOps {
 
     /**
      * 已存在时不覆盖的文件：Rime 全局配置、custom/ 目录，以及用户自己维护的补丁和短语
-     * （任意层级的 *.custom.yaml、custom_phrase*.txt）。雾凇一类方案的用户正是在这些文件里加词、改配置。
+     * （任意层级的 *.custom.yaml、custom_phrase*.txt / custom_phrase.dict.yaml）。
+     * 雾凇一类方案的用户正是在这些文件里加词、改配置；custom_phrase.dict.yaml 还可能
+     * 被局域网词库同步合并进跨设备词，更新方案时必须保留。
      */
     fun isProtectedConfig(path: String): Boolean {
         val name = path.substringAfterLast('/').lowercase()
         return isGlobalConfig(path) || path.startsWith("custom/") ||
-            name.endsWith(".custom.yaml") || (name.startsWith("custom_phrase") && name.endsWith(".txt"))
+            name.endsWith(".custom.yaml") || name.startsWith("custom_phrase")
     }
 
     fun isExplicitlyUninstalled(schemaId: String, tombstones: Set<String>): Boolean = schemaId in tombstones

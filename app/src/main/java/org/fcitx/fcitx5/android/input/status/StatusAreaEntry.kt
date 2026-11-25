@@ -14,15 +14,18 @@ sealed class StatusAreaEntry(
     val icon: Int,
     val active: Boolean
 ) {
-    class Android(label: String, icon: Int, val type: Type) :
-        StatusAreaEntry(label, icon, false) {
+    class Android(label: String, icon: Int, val type: Type, active: Boolean = false, val pluginId: String? = null) :
+        StatusAreaEntry(label, icon, active) {
         enum class Type {
             InputMethod,
             ReloadConfig,
             Keyboard,
             KeyboardPosition,
             ThemeList,
-            MessagePhraseCipher
+            MessagePhraseCipher,
+            Plugin,
+            PluginSettings,
+            TtsAudio
         }
     }
 

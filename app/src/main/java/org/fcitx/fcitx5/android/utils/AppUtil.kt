@@ -43,6 +43,9 @@ object AppUtil {
     fun launchMainToThemeList(context: Context) =
         launchMainToDest(context, SettingsRoute.Theme)
 
+    fun launchMainToPluginDetail(context: Context, pluginId: String) =
+        launchMainToDest(context, SettingsRoute.PluginDetail(pluginId))
+
     fun launchMainToInputMethodConfig(context: Context, uniqueName: String, displayName: String) =
         launchMainToDest(context, SettingsRoute.InputMethodConfig(displayName, uniqueName))
 

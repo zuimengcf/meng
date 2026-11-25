@@ -9,7 +9,7 @@ object Versions {
 
     val java = JavaVersion.VERSION_11
     const val compileSdk = 36
-    const val minSdk = 23
+    const val minSdk = 24 // QuickJS-ng 沙箱引擎 (meng-qjs) 要求 minSdk>=24
     const val targetSdk = 36
 
     const val defaultCMake = "3.31.6"
@@ -17,8 +17,8 @@ object Versions {
     const val defaultBuildTools = "36.1.0"
 
     // NOTE: increase this value to bump version code
-    const val baseVersionCode = 49
-    const val baseVersionName = "0.5.0"
+    const val baseVersionCode = 50
+    const val baseVersionName = "0.5.2"
 
     val supportedABIs = setOf("arm64-v8a")
     const val fallbackABI = "arm64-v8a"

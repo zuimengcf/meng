@@ -113,6 +113,8 @@ dependencies {
     implementation(libs.splitties.views.recyclerview)
     implementation(libs.aboutlibraries.core)
     implementation(libs.snakeyaml)
+    // QuickJS-ng 沙箱插件引擎（AAR，见 app/libs/meng-qjs-0.18.0.aar）
+    implementation(files("libs/meng-qjs-0.18.0.aar"))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)

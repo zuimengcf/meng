@@ -80,7 +80,6 @@ class ClipboardSettingsFragment : ManagedPreferenceFragment(AppPrefs.getInstance
 
     override fun onPreferenceUiCreated(screen: PreferenceScreen) {
         val ctx = requireContext()
-
         // 管理剪切板：全屏列表，点击条目直接编辑（无需长按）
         screen.addPreference(R.string.clipboard_manage_fullscreen, R.string.clipboard_manage_fullscreen_hint) {
             ctx.startActivity(android.content.Intent(ctx, ClipboardManageActivity::class.java))

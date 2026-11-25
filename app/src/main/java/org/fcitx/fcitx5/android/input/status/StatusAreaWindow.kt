@@ -21,6 +21,7 @@ import org.fcitx.fcitx5.android.daemon.launchOnReady
 import org.fcitx.fcitx5.android.data.prefs.AppPrefs
 import org.fcitx.fcitx5.android.data.theme.ThemeManager
 import org.fcitx.fcitx5.android.input.FcitxInputMethodService
+import org.fcitx.fcitx5.android.input.TtsAudioCommit
 import org.fcitx.fcitx5.android.input.bar.ui.ToolButton
 import org.fcitx.fcitx5.android.input.broadcast.InputBroadcastReceiver
 import org.fcitx.fcitx5.android.input.dependency.fcitx
@@ -31,8 +32,11 @@ import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.InputM
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.Keyboard
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.KeyboardPosition
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.MessagePhraseCipher
+import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.Plugin
+import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.PluginSettings
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.ReloadConfig
 import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.ThemeList
+import org.fcitx.fcitx5.android.input.status.StatusAreaEntry.Android.Type.TtsAudio
 import org.fcitx.fcitx5.android.input.wm.InputWindow
 import org.fcitx.fcitx5.android.input.wm.InputWindowManager
 import org.fcitx.fcitx5.android.utils.AppUtil
@@ -40,6 +44,8 @@ import org.fcitx.fcitx5.android.utils.DeviceUtil
 import org.fcitx.fcitx5.android.utils.MessagePhraseCipherOperations
 import org.fcitx.fcitx5.android.utils.MessagePhraseCipherTooLongException
 import org.fcitx.fcitx5.android.utils.alpha
+import org.fcitx.fcitx5.android.ui.main.iconRes
+import org.fcitx.fcitx5.android.plugin.PluginHost
 import org.mechdancer.dependency.manager.must
 import splitties.dimensions.dp
 import splitties.resources.styledColor
@@ -63,43 +69,116 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
     private var messagePhraseCipherEnabled by AppPrefs.getInstance().internal.messagePhraseCipherEnabled
 
     private val staticEntries by lazy {
-        arrayOf(
-            StatusAreaEntry.Android(
-                context.getString(R.string.keyboard_layout_position),
-                R.drawable.ic_baseline_drag_handle_24,
-                KeyboardPosition
-            ),
-            StatusAreaEntry.Android(
-                context.getString(R.string.theme),
-                R.drawable.ic_baseline_palette_24,
-                ThemeList
-            ),
-            StatusAreaEntry.Android(
-                context.getString(R.string.input_method_options),
-                R.drawable.ic_baseline_language_24,
-                InputMethod
-            ),
-            StatusAreaEntry.Android(
-                context.getString(R.string.reload_config),
-                R.drawable.ic_baseline_sync_24,
-                ReloadConfig
-            ),
-            StatusAreaEntry.Android(
-                context.getString(R.string.virtual_keyboard),
-                R.drawable.ic_baseline_keyboard_24,
-                Keyboard
-            ),
-            StatusAreaEntry.Android(
-                context.getString(R.string.message_phrase_cipher),
-                R.drawable.ic_baseline_code_24,
-                MessagePhraseCipher
-            )
-        )
+        StatusAreaOrder.defaultEntries(context)
     }
 
     private fun activateAction(action: Action) {
         fcitx.launchOnReady {
             it.activateAction(action.id)
+        }
+    }
+
+    // ===== 插件快速开关（「更多」面板）=====
+    // 每次状态刷新重算：已安装插件各一格，active 反映当前启用状态。
+    // 点击弹菜单：开/关（独立开关，立即生效）+ 打开插件设置（跳主应用详情页）。
+    private fun pluginEntries(): Array<StatusAreaEntry> {
+        val snapshot = PluginHost.snapshot()
+        return snapshot.map { info ->
+            StatusAreaEntry.Android(
+                info.manifest.name,
+                info.manifest.iconRes(),
+                StatusAreaEntry.Android.Type.Plugin,
+                info.state == org.fcitx.fcitx5.android.plugin.PluginState.Enabled,
+                pluginId = info.manifest.id
+            )
+        }.toTypedArray()
+    }
+
+    private fun showPluginMenu(anchor: View, pluginId: String) {
+        val enabled = PluginHost.isEnabled(pluginId)
+        val info = PluginHost.snapshot().firstOrNull { it.manifest.id == pluginId }
+        val popup = PopupMenu(context, anchor).apply {
+            menu.add(
+                context.getString(if (enabled) R.string.plugin_toggle_disable else R.string.plugin_toggle_enable)
+            ).setOnMenuItemClickListener {
+                PluginHost.setEnabled(pluginId, !enabled)
+                // 立即刷新面板显示
+                refreshEntries()
+                true
+            }
+            // 快捷面板「功能单独启用」入口：quick 开关三态循环 关闭 → ⚡单次 → 打开 → 关闭。
+            // 单次授权只对「关闭」的功能生效：功能关 + 单次开 → 下一次粘贴生效一次自动回常闭；
+            // 功能打开时循环回到「开」（单次不生效）。
+            info?.manifest?.settings
+                ?.filter { it.quick && it.type == "switch" }
+                ?.forEach { ps ->
+                    val funcOn = PluginHost.settingOf(pluginId, ps.key, ps.defaultValue) == "true"
+                    val once = PluginHost.isOnceMode(pluginId, ps.key)
+                    // 当前状态：功能开 → 「开」；功能关 + 单次 → 「⚡单次」；否则 → 「关」
+                    val state: Int = when {
+                        funcOn -> 2            // 打开
+                        once -> 1              // 单次（仅功能关时可达）
+                        else -> 0              // 关闭
+                    }
+                    val stateLabel = when (state) {
+                        2 -> "开"
+                        1 -> "⚡单次"
+                        else -> "关"
+                    }
+                    menu.add("${ps.label}：$stateLabel").setOnMenuItemClickListener {
+                        when (state) {
+                            // 关闭 → 单次（打标记，功能保持关）
+                            0 -> PluginHost.enableOnceMode(pluginId, ps.key, ps.defaultValue)
+                            // 单次 → 打开（清单次标记，功能置开；单次不生效）
+                            1 -> {
+                                PluginHost.clearOnceMode(pluginId, ps.key, ps.defaultValue)
+                                PluginHost.setSetting(pluginId, ps.key, "true")
+                            }
+                            // 打开 → 关闭（功能置关）
+                            else -> PluginHost.setSetting(pluginId, ps.key, "false")
+                        }
+                        refreshEntries()
+                        true
+                    }
+                }
+            menu.add(context.getString(R.string.plugin_open_settings)).setOnMenuItemClickListener {
+                AppUtil.launchMainToPluginDetail(context, pluginId)
+                true
+            }
+        }
+        popupMenu?.dismiss()
+        popupMenu = popup
+        popup.setOnDismissListener {
+            if (popupMenu === popup) popupMenu = null
+        }
+        popup.show()
+    }
+
+    /** 重新计算并刷新面板条目（插件开关切换后调用） */
+    private fun refreshEntries() {
+        val data = fcitx.runImmediately { statusArea() }
+        onStatusAreaUpdate(data)
+    }
+
+    // ===== 文字转语音直发 =====
+    // 链路：读取输入框全文 → 系统 TTS 合成音频 → commitContent 提交回当前输入框（目标应用按语音消息处理）。
+    // 注意：不做 supportsAudioCommit 前置拦截——目标是否收音频由 commitContent 现场判定，
+    // 失败时 TtsAudioCommit 内部 Toast「当前输入框不支持语音」，不浪费合成。
+    private fun sendTtsAudio() {
+        android.util.Log.i("MengTts", "sendTtsAudio tapped")
+        val text = service.readCurrentEditorTextForPlugin().also {
+            android.util.Log.i("MengTts", "readEditorText=${it?.take(50) ?: "null"}")
+        } ?: run {
+            Toast.makeText(service, R.string.tts_read_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (text.isBlank()) {
+            Toast.makeText(service, R.string.tts_read_failed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val ok = TtsAudioCommit.commit(text, service)
+        if (!ok) {
+            Toast.makeText(service, R.string.tts_target_unsupported, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -269,6 +348,21 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
                         KeyboardPosition -> service.showKeyboardPositionMenu()
                         ThemeList -> AppUtil.launchMainToThemeList(context)
                         MessagePhraseCipher -> showMessagePhraseCipherMenu(view)
+                        TtsAudio -> sendTtsAudio()
+                        Plugin -> entry.pluginId?.let { id ->
+                            val isPanel = PluginHost.snapshot()
+                                .firstOrNull { it.manifest.id == id }
+                                ?.manifest?.action == "panel"
+                            if (isPanel) {
+                                // 面板型插件：点击直接打开宿主通用面板窗口（UI 由插件自绘）
+                                windowManager.attachWindow(
+                                    org.fcitx.fcitx5.android.input.picker.PluginPanelWindow(id)
+                                )
+                            } else {
+                                showPluginMenu(view, id)
+                            }
+                        }
+                        PluginSettings -> Unit
                     }
                 }
             }
@@ -313,9 +407,13 @@ class StatusAreaWindow : InputWindow.ExtendedInputWindow<StatusAreaWindow>(),
     }
 
     override fun onStatusAreaUpdate(actions: Array<Action>) {
-        adapter.entries = arrayOf(
-            *staticEntries,
-            *Array(actions.size) { StatusAreaEntry.fromAction(actions[it]) }
+        adapter.entries = StatusAreaOrder.applyOrder(
+            context,
+            arrayOf(
+                *staticEntries,
+                *pluginEntries(),
+                *Array(actions.size) { StatusAreaEntry.fromAction(actions[it]) }
+            )
         )
     }
 
