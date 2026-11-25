@@ -31,7 +31,7 @@ object OfficialFingerprints {
         // repeater v1
         "repeater:1" to "d73a5e6127b8d6ebd220d84e8aa76244373fdbedb57668987a9a447720655daf",
         // smart-dict v1.1.114
-        "smart-dict:1001114" to "204029f7e9c1b4148fadcafd6c769c84fc64b15e601b13442a3eefeb0da6c2a6",
+        "smart-dict:1001114" to "e8f7f9d275c94f1d97390b2586c910b5223bea6187827b7b62f947cfbd5009b5",
         // smart-phrases v13
         "smart-phrases:13" to "1da082c197b1014a676aac1dd79f29d91043f60410d89d175037137ead712f93",
         // stickers v2
