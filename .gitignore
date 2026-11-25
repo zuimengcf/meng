@@ -25,6 +25,7 @@
 # Built application files
 *.apk
 *.aar
+!app/libs/*.aar
 *.ap_
 *.aab
 
@@ -103,3 +104,9 @@ lint/tmp/
 ### Kotlin ###
 .kotlin/
 ci_master_p13_apk.zip
+
+# meng-qjs 本地构建产物
+tools/meng-qjs/build/
+tools/meng-qjs/out/
+tools/meng-qjs/.gradle/
+tools/meng-qjs/ndk/
